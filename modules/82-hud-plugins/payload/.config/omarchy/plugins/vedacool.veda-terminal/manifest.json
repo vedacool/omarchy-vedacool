@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "vedacool.veda-terminal",
+  "name": "VEDA Terminal",
+  "version": "1.0.0",
+  "author": "vedacool",
+  "description": "Animated Gundam 00 VEDA quantum-core terminal over the desktop background, fed by live system stats and a sci-tech feed. Only shows with the veda-terminal theme.",
+  "kinds": [
+    "service"
+  ],
+  "entryPoints": {
+    "service": "VedaTerminal.qml"
+  }
+}

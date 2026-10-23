@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=Claude (agent)
+Comment=Omarchy agent window (omarchy-agent); gives it the Claude icon in the dock
+Exec=omarchy-agent
+Terminal=false
+Type=Application
+Icon=claude
+StartupWMClass=org.omarchy.agent
+NoDisplay=true

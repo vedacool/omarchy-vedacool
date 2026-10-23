@@ -1,0 +1,40 @@
+# Gundam 00 — Celestial Being console. Tuned to sit with the vedacool.gn-hud
+# desktop HUD: cyan is the primary signal colour (borders, highlights), the
+# cobalt background matches the HUD panels, gold is kept for small details,
+# and magenta is the Trans-Am pink.
+mode = "dark"
+
+accent = "#5cd6ff"
+selection = "#1f3a7a"
+muted = "#5a6d9e"
+
+# Window borders: the gauge's cyan-to-cobalt sweep; unfocused windows get a
+# dim cyan edge instead of neutral grey.
+hyprland_active_border = "rgba(5cd6ffee) rgba(3b5de0ee) 45deg"
+hyprland_inactive_border = "rgba(5cd6ff33)"
+
+background = "#0a1024"
+dark_background = "#070c1b"
+darker_background = "#040711"
+lighter_background = "#152048"
+
+foreground = "#e4f6ff"
+dark_foreground = "#6b7ca6"
+light_foreground = "#bcd4e6"
+bright_foreground = "#f7fbff"
+
+red = "#e8394f"
+yellow = "#f2c14e"
+orange = "#f08a3c"
+green = "#7dffd0"
+cyan = "#5cd6ff"
+blue = "#4a7dff"
+magenta = "#ff4fe6"
+brown = "#8a6a3a"
+
+bright_red = "#ff5a6c"
+bright_yellow = "#ffd97a"
+bright_green = "#a8ffe0"
+bright_cyan = "#8fe5ff"
+bright_blue = "#7ea2ff"
+bright_magenta = "#ff9cf0"

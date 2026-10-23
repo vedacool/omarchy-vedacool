@@ -1,0 +1,17 @@
+#!/bin/bash
+# Brings the Zoom desktop meeting window forward. A shown special workspace
+# (the scratchpad) takes all input, so the window goes into that one if it is
+# showing, otherwise onto the normal workspace (out of special:minimized too).
+addr=$(hyprctl clients -j | jq -r '[.[] | select(.class == "zoom" and .title == "Meeting")][0].address // empty')
+[[ -n $addr ]] || exit 0
+mon=$(hyprctl monitors -j | jq -c '.[] | select(.focused)')
+sp=$(jq -r '.specialWorkspace.name' <<<"$mon")
+if [[ -n $sp && $sp != special:minimized ]]; then
+  ws=$sp
+else
+  [[ $sp == special:minimized ]] && hyprctl dispatch "hl.dsp.workspace.toggle_special('minimized')" >/dev/null
+  ws=$(jq -r '.activeWorkspace.id' <<<"$mon")
+fi
+hyprctl dispatch "hl.dsp.window.move({ window = 'address:$addr', workspace = '$ws', follow = false })" >/dev/null
+hyprctl dispatch "hl.dsp.focus({ window = 'address:$addr' })" >/dev/null
+hyprctl dispatch "hl.dsp.window.bring_to_top()" >/dev/null

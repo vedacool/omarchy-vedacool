@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "vedacool.netspeed",
+  "name": "Network Speed",
+  "version": "1.0.0",
+  "author": "vedacool",
+  "description": "Live download/upload throughput in KB/s",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Network Speed",
+    "description": "Live download/upload throughput in KB/s",
+    "category": "Network",
+    "allowMultiple": false
+  }
+}

@@ -1,0 +1,38 @@
+#!/bin/bash
+# Runs inside the screensaver terminal window: hides the cursor, runs VEDA,
+# and exits when a key is pressed (VEDA handles that) or the window loses focus.
+# Mirrors /usr/bin/omarchy-screensaver, with VEDA in place of ttfx.
+
+VEDA="$HOME/Work/bin/veda-screensaver"
+
+screensaver_in_focus() {
+  hyprctl activewindow -j | jq -e '.class == "org.omarchy.screensaver"' >/dev/null 2>&1
+}
+
+cleanup() {
+  [[ -n ${veda_pid:-} ]] && kill "$veda_pid" 2>/dev/null
+  hyprctl eval 'hl.config({ cursor = { invisible = false } })' &>/dev/null || hyprctl keyword cursor:invisible false &>/dev/null || true
+  pkill -f '[o]rg.omarchy.screensaver' 2>/dev/null
+  exit 0
+}
+trap cleanup SIGINT SIGTERM SIGHUP SIGQUIT
+
+# Fall back to the stock screensaver if VEDA is missing.
+[[ -x $VEDA ]] || exec omarchy-screensaver
+
+hyprctl eval 'hl.config({ cursor = { invisible = true } })' &>/dev/null || hyprctl keyword cursor:invisible true &>/dev/null
+
+# Wait for the compositor to resize the pty from 80x24 to fullscreen.
+deadline=$((SECONDS + 2))
+while ((SECONDS < deadline)) && [[ $(stty size 2>/dev/null) == "24 80" ]]; do sleep 0.02; done
+
+"$VEDA" </dev/tty &
+veda_pid=$!
+
+# Give the window a moment to take focus before watching it.
+sleep 1
+while kill -0 "$veda_pid" 2>/dev/null; do
+  screensaver_in_focus || break
+  sleep 1
+done
+cleanup

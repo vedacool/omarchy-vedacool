@@ -1,0 +1,104 @@
+#!/bin/bash
+# Restores minimised windows when something focuses them (bound with SUPER+N,
+# which moves the window to special:minimized).
+#
+# The dock keeps showing minimised apps; clicking one (or ALT+TAB to it)
+# focuses the window, which Hyprland does by opening the hidden workspace on
+# top. This watcher sees that, hides the minimised workspace again, and moves
+# the window back to the workspace you are on, so it behaves like restoring a
+# minimised window on Windows. It also clears window-maximise-toggle's saved
+# size when a window closes, and keeps Zoom's screen-share controls on the
+# layer that is showing (see zoom_follow). Started from
+# ~/.config/hypr/autostart.lua.
+
+SPECIAL="special:minimized"
+SOCKET="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+
+# Only one watcher per Hyprland session.
+exec 9>"$XDG_RUNTIME_DIR/window-minimise-watch.$HYPRLAND_INSTANCE_SIGNATURE.lock"
+flock -n 9 || exit 0
+
+restore() {
+  local addr=$1 win mon ws shown
+  win=$(hyprctl clients -j | jq -c --arg a "$addr" '.[] | select(.address == $a)')
+  [[ $(jq -r '.workspace.name' <<<"$win") == "$SPECIAL" ]] || return
+  mon=$(hyprctl monitors -j | jq -c --argjson id "$(jq '.monitor' <<<"$win")" '.[] | select(.id == $id)')
+  ws=$(jq -r '.activeWorkspace.id' <<<"$mon")
+  shown=$(jq -r '.specialWorkspace.name' <<<"$mon")
+
+  [[ $shown == "$SPECIAL" ]] && hyprctl dispatch "hl.dsp.workspace.toggle_special('minimized')" >/dev/null
+  hyprctl dispatch "hl.dsp.window.move({ window = 'address:$addr', workspace = '$ws' })" >/dev/null
+  hyprctl dispatch "hl.dsp.focus({ window = 'address:$addr' })" >/dev/null
+  # Focusing by command doesn't raise a floating window; clicking would.
+  hyprctl dispatch "hl.dsp.window.bring_to_top()" >/dev/null
+}
+
+# Zoom's share toolbar (with Stop share), annotate button and video thumbnail
+# open on whatever is showing, often the scratchpad. Two traps:
+#  - left in the scratchpad, hiding it hides them and freezes the share;
+#  - on the normal workspace while the scratchpad is showing, they can't be
+#    clicked (a shown special workspace takes all input). That stranded
+#    Stop share on 2026-10-05.
+# So they follow what is visible: into the shown special workspace (unpinned),
+# or onto the normal workspace (pinned, so workspace switches keep them) once
+# it is hidden. The minimised workspace is skipped; restore() closes it at once.
+ZOOM_CONTROLS='^(as_toolbar|annotate_toolbar|zoom_linux_float_video_window)$'
+zoom_follow() {
+  local addr target pin pinned
+  while IFS=$'\t' read -r addr target pin pinned; do
+    [[ -n $addr ]] || continue
+    # Pinned windows can't change workspace, so unpin before moving.
+    [[ $pinned == true ]] && hyprctl dispatch "hl.dsp.window.pin({ window = 'address:$addr' })" >/dev/null
+    hyprctl dispatch "hl.dsp.window.move({ window = 'address:$addr', workspace = '$target', follow = false })" >/dev/null
+    [[ $pin == true ]] && hyprctl dispatch "hl.dsp.window.pin({ window = 'address:$addr' })" >/dev/null
+  done < <(hyprctl monitors -j | jq -r --argjson c "$(hyprctl clients -j)" --arg re "$ZOOM_CONTROLS" --arg min "$SPECIAL" '
+    .[] as $m
+    | ($m.specialWorkspace.name) as $sp
+    | select($sp != $min)
+    | (if $sp == "" then ($m.activeWorkspace.id | tostring) else $sp end) as $target
+    | ($sp == "") as $pin
+    | $c[]
+    | select(.class == "zoom" and (.title | test($re)) and .monitor == $m.id
+             and .workspace.name != $min)
+    | select(if $pin then (.workspace.name | startswith("special:")) or (.pinned | not)
+             else .workspace.name != $target end)
+    | [.address, $target, ($pin | tostring), (.pinned | tostring)] | @tsv')
+}
+
+pending=0
+zoom=0
+handle() {
+  case $1 in
+    activewindowv2\>\>*) pending=1 ;;
+    activespecial\>\>*|openwindow\>\>*,zoom,*) zoom=1 ;;
+    windowtitlev2\>\>*) [[ $1 =~ ,(as_toolbar|annotate_toolbar|zoom_linux_float_video_window)$ ]] && zoom=1 ;;
+    closewindow\>\>*)
+      # Forget the saved pre-maximise size (window-maximise-toggle);
+      # Hyprland reuses addresses, so a stale file could confuse a new window.
+      rm -f "${XDG_RUNTIME_DIR:-/tmp}/window-maximise/0x${1#closewindow>>}"
+      ;;
+  esac
+}
+
+while true; do
+  # 9>&-: socat must not hold the single-instance lock after we exit.
+  socat -U - "UNIX-CONNECT:$SOCKET" 2>/dev/null 9>&- | while IFS= read -r line; do
+    handle "$line"
+    # Opening the minimised workspace while another special workspace (the
+    # scratchpad) is shown briefly focuses the last minimised window before
+    # the one that was clicked. Let the burst of events settle, then restore
+    # only the window that ends up focused.
+    while IFS= read -r -t 0.15 line; do handle "$line"; done
+    if ((zoom)); then
+      zoom=0
+      zoom_follow
+    fi
+    if ((pending)); then
+      pending=0
+      restore "$(hyprctl activewindow -j | jq -r '.address // empty')"
+    fi
+  done
+  # Socket closed (Hyprland restarting or gone): stop if the session ended.
+  [[ -S $SOCKET ]] || exit 0
+  sleep 1
+done

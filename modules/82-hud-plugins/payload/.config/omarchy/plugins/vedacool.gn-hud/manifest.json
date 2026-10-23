@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "vedacool.gn-hud",
+  "name": "GN HUD",
+  "version": "1.0.0",
+  "author": "vedacool",
+  "description": "Animated Gundam 00 Twin Drive HUD over the desktop background, fed by live system stats. Only shows with the gundam-00-raiser theme.",
+  "kinds": [
+    "service"
+  ],
+  "entryPoints": {
+    "service": "GnHud.qml"
+  }
+}

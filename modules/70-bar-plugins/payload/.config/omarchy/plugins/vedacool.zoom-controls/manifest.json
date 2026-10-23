@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "vedacool.zoom-controls",
+  "name": "Zoom Controls",
+  "version": "1.1.0",
+  "author": "vedacool",
+  "description": "Bar pill for the Zoom desktop app while sharing: tucks Zoom's big share toolbar away, one click brings it back (Audio, Video, Stop share), and keeps Zoom's other windows from blocking its clicks. Idea from jkarmel/omarchy-zoom-controls (MIT), which only supports the web app.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Zoom Controls",
+    "description": "Show or hide Zoom's share toolbar while sharing",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

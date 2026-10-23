@@ -1,0 +1,863 @@
+#!/usr/bin/env python3
+"""VEDA — a calm Gundam 00 themed screensaver for the terminal.
+
+VEDA's quantum core (the same rotating geodesic lattice as the vedacool.veda-terminal
+desktop, drawn in braille) gathers information from its network: the real
+feed sources sit as nodes around it, data streams travel from the source of
+an actual headline into a lattice node, which lights and passes a pulse to
+the gold core. Every few seconds the core emits a processed headline: its
+letters fly out of the core onto the top row of the archive below, pushing
+the older entries down. Also drifting GN particles
+and a live clock.
+Headlines come from the GN HUD news cache
+(~/.cache/gn-hud/news.json, written by the gn-hud plugin's fetch-news.py).
+
+On battery it drops to 5fps (motion is time-based, so nothing slows down).
+Pure stdlib. Truecolor ANSI with diff-based redraw so only changed cells are
+repainted each frame — cheap on this laptop's old Radeon (no GPU path at all).
+Runs standalone in any terminal for previewing; any key (or the terminal
+losing focus, when driven by omarchy-screensaver) ends it.
+
+Usage: veda-screensaver [--fps N] [--news PATH] [--once-size]
+"""
+
+import json
+import math
+import os
+import random
+import select
+import signal
+import sys
+import termios
+import time
+import tty
+from datetime import datetime
+
+# ---- Palette (from the gn-hud HUD theme) -----------------------------------
+CYAN    = (92, 214, 255)    # #5cd6ff  primary
+BLUE    = (59, 93, 224)     # #3b5de0  secondary
+FG      = (228, 246, 255)   # #e4f6ff  bright text
+MUTED   = (90, 109, 158)    # #5a6d9e  dim text
+DIMCYAN = (40, 96, 130)     # faint rings / starfield
+MAGENTA = (255, 79, 230)    # #ff4fe6  Trans-Am accent (sparing)
+GOLD    = (242, 193, 78)    # #f2c14e  detail accent
+RED     = (232, 57, 79)     # #e8394f  security tag
+GREEN   = (90, 210, 160)    # science tag
+
+# Under the veda-terminal theme the same roles take the VEDA desktop's
+# phosphor green and gold (CYAN stays the name of the primary colour).
+try:
+    with open(os.path.expanduser("~/.local/state/omarchy/current/theme.name")) as _f:
+        THEME = _f.read().strip()
+except OSError:
+    THEME = ""
+if THEME == "veda-terminal":
+    CYAN    = (110, 231, 160)   # #6ee7a0  primary
+    BLUE    = (31, 138, 90)     # #1f8a5a  secondary
+    FG      = (227, 251, 233)   # #e3fbe9  bright text
+    MUTED   = (118, 168, 140)   # #76a88c  dim text (4.5:1+ even at 0.9 shade)
+    DIMCYAN = (34, 92, 64)      # faint rings / starfield
+    MAGENTA = (255, 138, 60)    # #ff8a3c  burst accent (sparing)
+    GOLD    = (232, 194, 90)    # #e8c25a  core / detail accent
+    GREEN   = (200, 255, 217)   # science tag
+
+if THEME == "veda-terminal":
+    # Same tag colours as the desktop HUD's news panel.
+    CAT_COL = {"SPACE": (134, 192, 240), "SCIENCE": GREEN, "TECH": (201, 160, 240), "SECURITY": (255, 138, 60)}
+else:
+    CAT_COL = {"SPACE": CYAN, "SCIENCE": GREEN, "TECH": GOLD, "SECURITY": MAGENTA}
+
+CAT_STYLE = {
+    "SPACE":    (CAT_COL["SPACE"],    "SPACE"),
+    "SCIENCE":  (CAT_COL["SCIENCE"],  "SCI "),
+    "TECH":     (CAT_COL["TECH"],     "TECH"),
+    "SECURITY": (CAT_COL["SECURITY"], "SEC "),
+}
+
+NEWS_PATH = os.path.expanduser("~/.cache/gn-hud/news.json")
+ASPECT = 2.05  # terminal cells are ~twice as tall as wide; widen X for round shapes
+
+# 5-row block digits (width 4 each) for the clock.
+GLYPHS = {
+    "0": ["████", "█  █", "█  █", "█  █", "████"],
+    "1": ["  █ ", " ██ ", "  █ ", "  █ ", " ███"],
+    "2": ["████", "   █", "████", "█   ", "████"],
+    "3": ["████", "   █", " ███", "   █", "████"],
+    "4": ["█  █", "█  █", "████", "   █", "   █"],
+    "5": ["████", "█   ", "████", "   █", "████"],
+    "6": ["████", "█   ", "████", "█  █", "████"],
+    "7": ["████", "   █", "  █ ", " █  ", " █  "],
+    "8": ["████", "█  █", "████", "█  █", "████"],
+    "9": ["████", "█  █", "████", "   █", "████"],
+    ":": ["  ", "██", "  ", "██", "  "],
+    " ": ["  ", "  ", "  ", "  ", "  "],
+}
+
+
+def _printable(value):
+    """Feed text minus control characters, so a cache can never smuggle
+    terminal escape sequences into the screen."""
+    return "".join(ch for ch in str(value or "") if ch.isprintable()).strip()
+
+
+# ---- Lattice geometry (matches the desktop's VedaCore.qml) --------------------
+def _geodesic():
+    """Frequency-2 geodesic sphere (42 nodes, 120 links) + icosahedron (12, 30)."""
+    p = (1 + 5 ** 0.5) / 2
+    raw = [(-1, p, 0), (1, p, 0), (-1, -p, 0), (1, -p, 0), (0, -1, p), (0, 1, p),
+           (0, -1, -p), (0, 1, -p), (p, 0, -1), (p, 0, 1), (-p, 0, -1), (-p, 0, 1)]
+
+    def norm(v):
+        n = math.sqrt(sum(c * c for c in v))
+        return tuple(c / n for c in v)
+
+    ico = [norm(v) for v in raw]
+    ico_edges = [(i, j) for i in range(12) for j in range(i + 1, 12)
+                 if abs(sum((raw[i][k] - raw[j][k]) ** 2 for k in range(3)) - 4) < 0.01]
+    adj = set(ico_edges)
+    faces = [(a, b, c) for a in range(12) for b in range(a + 1, 12) for c in range(b + 1, 12)
+             if (a, b) in adj and (b, c) in adj and (a, c) in adj]
+    verts = list(ico)
+    mid = {}
+
+    def midpoint(a, b):
+        k = (min(a, b), max(a, b))
+        if k not in mid:
+            verts.append(norm(tuple((ico[a][i] + ico[b][i]) / 2 for i in range(3))))
+            mid[k] = len(verts) - 1
+        return mid[k]
+
+    edges = set()
+    for a, b, c in faces:
+        ab, bc, ca = midpoint(a, b), midpoint(b, c), midpoint(c, a)
+        for e in ((a, ab), (ab, b), (b, bc), (bc, c), (c, ca), (ca, a), (ab, bc), (bc, ca), (ca, ab)):
+            edges.add((min(e), max(e)))
+    return verts, sorted(edges), ico, ico_edges
+
+
+GEO = _geodesic()
+
+# Braille cells hold a 2x4 dot grid, so lines drawn in dots are 2x/4x finer
+# than whole characters. BRAILLE[dy][dx] is the bit for that dot.
+BRAILLE = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
+
+
+# Orbit rings around the lattice: (tilt, x radius, y radius, packet speed),
+# radii in lattice radii.
+ORBITS = ((-0.28, 1.5, 0.34, 0.5), (0.38, 1.32, 0.27, -0.35))
+
+
+class Particle:
+    __slots__ = ("x", "y", "vx", "vy", "ch", "base", "ph")
+
+    def __init__(self, w, h):
+        self.respawn(w, h, anywhere=True)
+
+    def respawn(self, w, h, anywhere=False):
+        self.x = random.uniform(0, w - 1)
+        self.y = random.uniform(0, h - 1) if anywhere else h - 1
+        speed = random.uniform(0.04, 0.16)
+        ang = random.uniform(-0.5, 0.0) - math.pi / 2  # drift up, slight right
+        self.vx = math.cos(ang) * speed * ASPECT
+        self.vy = math.sin(ang) * speed
+        self.ch = random.choice("·‧∙*")  # "•" is kept for data streams
+        self.base = random.uniform(0.3, 1.0)
+        self.ph = random.uniform(0, math.tau)
+
+
+def _bezier(p0, p1, p2, u):
+    a = (1 - u) * (1 - u)
+    b = 2 * (1 - u) * u
+    c = u * u
+    return (a * p0[0] + b * p1[0] + c * p2[0], a * p0[1] + b * p1[1] + c * p2[1])
+
+
+class Stream:
+    """A packet of data flowing from a source node along a curve into one of
+    the lattice's nodes (vi). Without sources it starts at a screen edge."""
+    __slots__ = ("p0", "bend", "t0", "dur", "col", "vi")
+
+    def __init__(self, p0, col, vi, t):
+        self.p0 = p0
+        # The bend arcs streams in rather than shooting them straight.
+        self.bend = random.uniform(-0.3, 0.3)
+        self.t0 = t
+        self.dur = random.uniform(2.4, 3.8)
+        self.col = col
+        self.vi = vi
+
+    def pos(self, end, t):
+        x0, y0 = self.p0
+        ex, ey = end
+        ctrl = ((x0 + ex) / 2 - (ey - y0) * self.bend * ASPECT,
+                (y0 + ey) / 2 + (ex - x0) * self.bend / ASPECT)
+        u = (t - self.t0) / self.dur
+        return u, _bezier(self.p0, ctrl, end, min(1.0, u * u * (3 - 2 * u)))
+
+
+class Emit:
+    """One headline leaving the core: a short charge-up, then its letters fly
+    out one by one and land on the archive's top row (cells = [(x, ch, col)])."""
+    CHARGE, STAGGER, FLIGHT = 0.6, 0.022, 1.0
+
+    def __init__(self, item, cells, height, y, t):
+        self.item = item
+        self.cells = cells
+        self.height = height
+        self.y = y
+        self.t0 = t
+        self.out_at = t + self.CHARGE
+        self.done_at = self.out_at + len(cells) * self.STAGGER + self.FLIGHT
+        self.bends = [random.uniform(-0.2, 0.2) for _ in cells]
+
+
+class Veda:
+    def __init__(self, fps, news_path):
+        self.fps = fps
+        self.base_fps = fps
+        self.news_path = news_path
+        self.w, self.h = self._size()
+        self.cur = None   # previous frame buffers (ch, col)
+        self.particles = []
+        self.news = []
+        self.news_loaded_at = 0
+        self.streams = []
+        self.next_stream_at = 0.0
+        self.emit = None
+        self.next_emit_at = 3.0
+        self.emit_idx = 0
+        self.archive = []      # headlines VEDA has taken in, newest first
+        self.archived = 0      # everything that reached the core (streams + headlines)
+        self.flash = 0.0       # core brightness boost, decays each frame
+        self.sources = []      # feed sources as network nodes: {name, pos, hit}
+        self.proj = []         # lattice nodes on screen this frame: (x, y, z) in cells
+        self.node_hit = {}     # lattice node -> time a stream landed on it
+        self.core = (0, 0)
+        self.lattice_key = None
+        self.lattice_cells = []
+        self.on_battery = False
+        self.power_checked = -99.0
+        self.speed = 1.0       # particle step scale: 1.0 at 10fps, 2.0 at 5fps
+        self.network_key = None
+        self.network_cells = []
+        self.row_cache = {}
+        self._init_particles()
+        self._load_news(force=True)
+
+    # -- terminal -----------------------------------------------------------
+    def _size(self):
+        try:
+            s = os.get_terminal_size()
+            return max(20, s.columns), max(10, s.lines)
+        except OSError:
+            return 100, 30
+
+    def _init_particles(self):
+        n = max(18, (self.w * self.h) // 55)
+        self.particles = [Particle(self.w, self.h) for _ in range(n)]
+
+    def _blank(self):
+        return [[" "] * self.w for _ in range(self.h)], \
+               [[None] * self.w for _ in range(self.h)]
+
+    # -- news ---------------------------------------------------------------
+    def _load_news(self, force=False):
+        now = time.time()
+        if not force and now - self.news_loaded_at < 60:
+            return
+        self.news_loaded_at = now
+        try:
+            with open(self.news_path) as f:
+                data = json.load(f)
+            items = data.get("items", [])
+            items.sort(key=lambda i: i.get("time", 0), reverse=True)
+            cleaned = []
+            for i in items:
+                t = _printable(i.get("title", ""))
+                if not t:
+                    continue
+                cleaned.append({
+                    "title": t,
+                    "source": _printable(i.get("source", "")),
+                    "cat": _printable(i.get("category", "")).upper(),
+                })
+            if cleaned:
+                self.news = cleaned
+                names = sorted({i["source"] for i in cleaned if i["source"]})
+                if names != [s["name"] for s in self.sources]:
+                    self.sources = [{"name": n, "pos": (0, 0), "hit": -9.0, "side": 1} for n in names]
+        except (OSError, ValueError, KeyError, AttributeError, TypeError):
+            pass  # keep whatever we had (offline, or a malformed cache)
+
+    # -- painting helpers ---------------------------------------------------
+    def _put(self, bch, bcol, x, y, ch, col):
+        xi, yi = int(round(x)), int(round(y))
+        if 0 <= yi < self.h and 0 <= xi < self.w:
+            bch[yi][xi] = ch
+            bcol[yi][xi] = col
+
+    def _text(self, bch, bcol, x, y, s, col):
+        for i, ch in enumerate(s):
+            self._put(bch, bcol, x + i, y, ch, col)
+
+    def _center(self, bch, bcol, y, s, col):
+        self._text(bch, bcol, (self.w - len(s)) // 2, y, s, col)
+
+    @staticmethod
+    def _shade(col, f):
+        return (int(col[0] * f), int(col[1] * f), int(col[2] * f))
+
+    # -- scene --------------------------------------------------------------
+    def _draw_particles(self, bch, bcol, t):
+        for p in self.particles:
+            # Velocities are per 0.1s, so drift speed doesn't depend on fps.
+            p.x += p.vx * self.speed
+            p.y += p.vy * self.speed
+            if p.y < 0 or p.x < 0 or p.x >= self.w:
+                p.respawn(self.w, self.h)
+            tw = 0.55 + 0.45 * math.sin(t * 2.2 + p.ph)
+            f = p.base * tw
+            col = self._shade(CYAN if f > 0.75 else DIMCYAN, 0.5 + 0.5 * f)
+            self._put(bch, bcol, p.x, p.y, p.ch, col)
+
+    # -- braille canvas ---------------------------------------------------
+    def _dot(self, can, xd, yd, col, f):
+        """Set one braille dot; the brightest colour in a cell wins."""
+        xi, yi = int(xd), int(yd)
+        if xi < 0 or yi < 0:
+            return
+        cell = (xi >> 1, yi >> 2)
+        bit = BRAILLE[yi & 3][xi & 1]
+        cur = can.get(cell)
+        if cur is None:
+            can[cell] = [bit, col, f]
+        else:
+            cur[0] |= bit
+            if f > cur[2]:
+                cur[1], cur[2] = col, f
+
+    def _line(self, can, a, b, col, f, step=1.0):
+        """Dot line between two points given in cells."""
+        x0, y0, x1, y1 = a[0] * 2, a[1] * 4, b[0] * 2, b[1] * 4
+        n = max(1, int(max(abs(x1 - x0), abs(y1 - y0)) / step))
+        for k in range(n + 1):
+            u = k / n
+            self._dot(can, x0 + (x1 - x0) * u, y0 + (y1 - y0) * u, col, f)
+
+    def _cells(self, can):
+        """Turn a braille canvas into ready-to-paint (x, y, ch, col) cells."""
+        return [(x, y, chr(0x2800 + bits), self._shade(col, f))
+                for (x, y), (bits, col, f) in can.items()
+                if 0 <= x < self.w and 0 <= y < self.h]
+
+    @staticmethod
+    def _paint(bch, bcol, cells):
+        for x, y, ch, col in cells:
+            bch[y][x] = ch
+            bcol[y][x] = col
+
+    # -- VEDA lattice -----------------------------------------------------
+    def _project(self, verts, r, yaw, tilt):
+        """Rotate unit vectors and map them to cell coordinates around the core."""
+        cx, cy = self.core
+        cyw, syw, ct, st = math.cos(yaw), math.sin(yaw), math.cos(tilt), math.sin(tilt)
+        out = []
+        for vx, vy, vz in verts:
+            x = vx * cyw + vz * syw
+            z = -vx * syw + vz * cyw
+            y = vy * ct - z * st
+            z = vy * st + z * ct
+            out.append((cx + x * r * ASPECT, cy + y * r, z))
+        return out
+
+    def _orbit(self, rx, ry, ca, sa, a):
+        """Point on an ellipse (radii in rows) tilted on screen, in cells."""
+        X, Y = math.cos(a) * rx, math.sin(a) * ry
+        return self.core[0] + (X * ca - Y * sa) * ASPECT, self.core[1] + X * sa + Y * ca
+
+    def _draw_lattice(self, bch, bcol, t, r):
+        """The rotating geodesic shell, counter-turning gold inner shell, two
+        tilted orbit rings and the core star. r is the radius in rows."""
+        cx, cy = self.core
+        fl = self.flash
+        # The mesh turns in coarse steps (3 redraws/s on AC, 2 on battery):
+        # every changed braille cell costs terminal output, while streams and
+        # particles keep moving at the full frame rate.
+        rate = 2 if self.on_battery else 3
+        step = int(t * rate)
+        key = (step, rate, r, self.core)
+        if key != self.lattice_key:
+            self.lattice_key = key
+            can = {}
+            outer, edges, inner, inner_edges = GEO
+            spin = step / rate * 0.12
+            self.proj = self._project(outer, r, spin, 0.38)
+            # Front half only; the far side would just add noise at this resolution.
+            for a, b in edges:
+                pa, pb = self.proj[a], self.proj[b]
+                if pa[2] + pb[2] > 0:
+                    self._line(can, pa, pb, CYAN, 0.55 + 0.25 * min(1.0, pa[2] + pb[2]))
+            pin = self._project(inner, r * 0.42, -spin * 1.6, -0.3)
+            for a, b in inner_edges:
+                self._line(can, pin[a], pin[b], GOLD, 0.85)
+            # Orbit rings: tilted ellipses around the lattice.
+            for tilt, rx, ry, spd in ORBITS:
+                ca, sa = math.cos(tilt), math.sin(tilt)
+                steps = int(rx * r * ASPECT * 5)
+                for k in range(steps):
+                    x, y = self._orbit(rx * r, ry * r, ca, sa, math.tau * k / steps)
+                    self._dot(can, x * 2, y * 4, GOLD, 0.45)
+            self.lattice_cells = self._cells(can)
+        self._paint(bch, bcol, self.lattice_cells)
+        # Packets riding the orbits (whole cells, drawn over the braille).
+        for tilt, rx, ry, spd in ORBITS:
+            ca, sa = math.cos(tilt), math.sin(tilt)
+            x, y = self._orbit(rx * r, ry * r, ca, sa, t * spd)
+            self._put(bch, bcol, x, y, "●", self._shade(FG, 0.85))
+        # Nodes that just received a stream glow, and hand a pulse to the core.
+        for vi, hit in list(self.node_hit.items()):
+            age = t - hit[0]
+            if age > 1.4:
+                del self.node_hit[vi]
+                continue
+            x, y, z = self.proj[vi]
+            self._put(bch, bcol, x, y, "◆" if age < 0.5 else "•",
+                      self._shade(GOLD if age < 0.7 else CYAN, 1.0 - 0.4 * age / 1.4))
+            if age < 0.6:
+                u = age / 0.6
+                self._put(bch, bcol, x + (cx - x) * u, y + (cy - y) * u, "•", self._shade(FG, 0.9))
+            elif not hit[1]:
+                # Once per arrival; an age window (< 0.66s) missed it at 5-10fps.
+                hit[1] = True
+                self.flash = min(1.0, self.flash + 0.2)
+        # Core star.
+        gl = min(1.0, 0.7 + 0.3 * math.sin(t * 2.0) + fl)
+        self._put(bch, bcol, cx, cy, "✦" if fl < 0.35 else "✺", self._shade(FG, gl))
+        for dx in (-1, 1):
+            self._put(bch, bcol, cx + dx, cy, "·", self._shade(GOLD, gl))
+        if fl >= 0.35:
+            for dx, dy in ((-2, 0), (2, 0), (0, -1), (0, 1)):
+                self._put(bch, bcol, cx + dx, cy + dy, "·", self._shade(GOLD, gl))
+
+    # -- the network: real feed sources around the core --------------------
+    def _place_sources(self, top, bottom, r):
+        """Spread the sources over two arcs left and right of the core."""
+        n = len(self.sources)
+        if n == 0:
+            return
+        cx, cy = self.core
+        rx = max(r * ASPECT * 1.9, min(self.w * 0.36, self.w / 2 - 20))
+        ry = max(2.0, min(cy - top, bottom - cy))
+        left = (n + 1) // 2
+        for i, src in enumerate(self.sources):
+            side, k, m = (-1, i, left) if i < left else (1, i - left, n - left)
+            # Angles from -50° to +50° around the horizontal, per side.
+            ang = math.radians(-50 + 100 * (k + 0.5) / max(1, m))
+            src["pos"] = (cx + side * rx * math.cos(ang), cy + ry * math.sin(ang))
+            src["side"] = side
+
+    def _draw_network(self, bch, bcol, t, focus):
+        if not self.sources:
+            return
+        key = tuple(s["pos"] for s in self.sources)
+        if key != self.network_key:
+            self.network_key = key
+            can = {}
+            for side in (-1, 1):
+                pts = [s["pos"] for s in self.sources if s["side"] == side]
+                for a, b in zip(pts, pts[1:]):
+                    self._line(can, a, b, DIMCYAN, 0.7, step=3.0)
+            self.network_cells = self._cells(can)
+        self._paint(bch, bcol, self.network_cells)
+        for s in self.sources:
+            x, y = s["pos"]
+            age = t - s["hit"]
+            lit = s["name"] == focus
+            f = 1.0 if lit else max(0.45, 1.0 - age / 1.2)
+            col = GOLD if lit else CYAN
+            self._put(bch, bcol, x, y, "◉", self._shade(col, f))
+            label = s["name"].upper()[:17]
+            lx = x + 2 if s["side"] > 0 else x - 1 - len(label)
+            self._text(bch, bcol, lx, y, label, self._shade(FG if lit else MUTED, 1.0 if lit else 0.9))
+
+    def _draw_clock(self, bch, bcol, top, big):
+        now = datetime.now()
+        if big:
+            blink = CYAN if now.second % 2 == 0 else self._shade(CYAN, 0.35)
+            txt = now.strftime("%I:%M:%S").lstrip("0")
+            cols = [GLYPHS.get(c, GLYPHS[" "]) for c in txt]
+            tw = sum(len(g[0]) + 1 for g in cols) - 1
+            x0 = (self.w - tw) // 2
+            for row in range(5):
+                x = x0
+                for c, g in zip(txt, cols):
+                    col = blink if c == ":" else CYAN
+                    for j, ch in enumerate(g[row]):
+                        if ch != " ":
+                            self._put(bch, bcol, x + j, top + row, "█", col)
+                    x += len(g[0]) + 1
+            # 12-hour like the desktop HUD; AM/PM sits beside the big digits.
+            self._text(bch, bcol, x0 + tw + 2, top + 4, now.strftime("%p"), CYAN)
+            dateline = now.strftime("%a · %Y.%m.%d").upper()
+            self._center(bch, bcol, top + 6, dateline, MUTED)
+            return top + 8
+        else:
+            self._center(bch, bcol, top, now.strftime("%I:%M:%S %p").lstrip("0"), CYAN)
+            self._center(bch, bcol, top + 1,
+                         now.strftime("%a · %Y.%m.%d").upper(), MUTED)
+            return top + 3
+
+    def _news_cols(self):
+        pad = max(2, (self.w - min(self.w - 4, 92)) // 2)
+        return pad, self.w - pad * 2
+
+    def _archive_row(self, it, dim):
+        """Cells (x, ch, col) for one archive row: tag, title, source on the right."""
+        key = (it["title"], it["source"], dim, self.w)
+        row = self.row_cache.get(key)
+        if row is None:
+            if len(self.row_cache) > 200:
+                self.row_cache.clear()
+            row = self.row_cache[key] = self._build_row(it, dim)
+        return row
+
+    @staticmethod
+    def _wrap(text, first, rest, lines=2):
+        """Greedy word wrap into at most `lines` lines (first line `first` wide);
+        only text that still doesn't fit gets an ellipsis."""
+        out, words = [], text.split()
+        while words and len(out) < lines:
+            limit = first if not out else rest
+            line = ""
+            while words and len(line) + (1 if line else 0) + len(words[0]) <= limit:
+                line += (" " if line else "") + words.pop(0)
+            if not line:  # a single word longer than the line
+                line, words[0] = words[0][:limit], words[0][limit:]
+            out.append(line)
+        if words:
+            limit = first if len(out) == 1 else rest
+            out[-1] = out[-1][:limit - 1].rstrip() + "…"
+        return out
+
+    def _build_row(self, it, dim):
+        """Archive entry: tag and source on the first line, the title wrapped
+        over up to two lines in between. Returns (cells (x, dy, ch, col), height)."""
+        pad, width = self._news_cols()
+        col, tag = CAT_STYLE.get(it["cat"], (MUTED, (it["cat"] + "    ")[:4]))
+        src = it["source"][:17]
+        first = width - 5 - len(src) - 2
+        if first < 12:
+            first, src = width - 5, ""
+        lines = self._wrap(it["title"], first, width - 5)
+        cells = [(pad + i, 0, ch, self._shade(col, dim)) for i, ch in enumerate(tag)]
+        for dy, line in enumerate(lines):
+            cells += [(pad + 5 + i, dy, ch, self._shade(FG, dim)) for i, ch in enumerate(line)]
+        x0 = pad + width - len(src)
+        # Older entries fade, but the source name never drops below ~4.5:1.
+        cells += [(x0 + i, 0, ch, self._shade(MUTED, max(dim, 0.85))) for i, ch in enumerate(src)]
+        return [c for c in cells if c[2] != " "], len(lines)
+
+    def _draw_news(self, bch, bcol, top, rows, t):
+        """The archive log: headlines VEDA has processed, newest on top. While
+        a headline is being emitted the older entries move down to make room."""
+        if rows < 1:
+            return
+        pad, width = self._news_cols()
+        head = "SCI-TECH FEED · ARCHIVED BY VEDA"   # same feed name as the HUD
+        count = f"ARCHIVED {self.archived:,}  ·  STREAMS {len(self.streams)}"
+        self._text(bch, bcol, pad, top - 1, head[:width], self._shade(CYAN, 0.7))
+        if len(head) + len(count) + 2 <= width:
+            self._text(bch, bcol, pad + width - len(count), top - 1, count, self._shade(CYAN, 0.7))
+        # While a headline is landing, the entries below make room for it.
+        y = top + (self.emit.height if self.emit is not None and t >= self.emit.out_at else 0)
+        for i, it in enumerate(self.archive):
+            cells, height = self._archive_row(it, 1.0 if i == 0 and y == top else 0.72)
+            if y + height > top + rows:
+                break
+            for x, dy, ch, col in cells:
+                self._put(bch, bcol, x, y + dy, ch, col)
+            y += height
+
+    # -- gathering: data streams in from the network, headlines out to the archive
+    def _update_streams(self, t, core):
+        target = max(4, min(12, self.w // 12))
+        if t < self.next_stream_at or len(self.streams) >= target or not self.proj:
+            return
+        self.next_stream_at = t + random.uniform(0.35, 0.9)
+        # Land on a node on the near side of the lattice so arrivals are visible.
+        front = [i for i, p in enumerate(self.proj) if p[2] > 0.2] or list(range(len(self.proj)))
+        vi = random.choice(front)
+        by_name = {s["name"]: s for s in self.sources}
+        item = random.choice(self.news[:40]) if self.news else None
+        src = by_name.get(item["source"]) if item else None
+        if src:
+            src["hit"] = t
+            col = CAT_STYLE.get(item["cat"], (CYAN, ""))[0]
+            self.streams.append(Stream(src["pos"], col, vi, t))
+        else:
+            x0 = random.choice((1.0, self.w - 2.0))
+            self.streams.append(Stream((x0, random.uniform(3, self.h - 3)), CYAN, vi, t))
+
+    def _draw_streams(self, bch, bcol, t, core):
+        alive = []
+        for s in self.streams:
+            end = self.proj[s.vi][:2] if s.vi < len(self.proj) else core
+            u, (x, y) = s.pos(end, t)
+            if u >= 1.0:
+                self.archived += 1
+                self.node_hit[s.vi] = [t, False]   # [landed at, pulse sent]
+                continue
+            alive.append(s)
+            # Fading trail behind the head, sampled a little earlier on the path.
+            for k, f in ((5, 0.3), (4, 0.42), (3, 0.56), (2, 0.72), (1, 0.88)):
+                _, (tx, ty) = s.pos(end, t - k * 0.09)
+                if t - k * 0.09 > s.t0:
+                    self._put(bch, bcol, tx, ty, "•" if k == 1 else "·", self._shade(s.col, f))
+            # Head is the stream colour pushed toward white so it reads as light.
+            fade_in = min(1.0, u * 6)
+            head = tuple(int(c + (w - c) * 0.55) for c, w in zip(s.col, FG))
+            self._put(bch, bcol, x, y, "●", self._shade(head, 0.5 + 0.5 * fade_in))
+        self.streams = alive
+
+    def _start_emit(self, t, y):
+        if not self.news:
+            return
+        it = self.news[self.emit_idx % len(self.news)]
+        self.emit_idx += 1
+        cells, height = self._archive_row(it, 1.0)
+        self.emit = Emit(it, cells, height, y, t)
+
+    def _draw_emit(self, bch, bcol, t, core):
+        e = self.emit
+        if e is None:
+            return
+        cx, cy = core
+        if t < e.out_at:
+            # Charge-up: the core brightens before it lets the headline go.
+            self.flash = max(self.flash, 0.5 * (t - e.t0) / e.CHARGE)
+        else:
+            self.flash = max(self.flash, 0.4)
+            for i, (hx, dy, ch, col) in enumerate(e.cells):
+                hy = e.y + dy
+                u = (t - e.out_at - i * e.STAGGER) / e.FLIGHT
+                if u <= 0:
+                    continue
+                if u >= 1.0:
+                    self._put(bch, bcol, hx, hy, ch, col)  # landed
+                    continue
+                q = 1 - (1 - u) * (1 - u)  # ease out: quick launch, soft landing
+                ctrl = ((cx + hx) / 2 + e.bends[i] * abs(hy - cy) * ASPECT * 3,
+                        cy + (hy - cy) * 0.15)
+                x, y = _bezier(core, ctrl, (hx, hy), q)
+                glyph = "·" if u < 0.25 else ("•" if u < 0.6 else ch)
+                tint = tuple(int(c + (g - c) * (1 - u)) for c, g in zip(col, GOLD))
+                self._put(bch, bcol, x, y, glyph, tint)
+        if t >= e.done_at:
+            self.archive.insert(0, e.item)
+            del self.archive[12:]
+            self.archived += 1
+            self.emit = None
+            self.next_emit_at = t + random.uniform(4.5, 6.0)
+
+    def _draw_frame_chrome(self, bch, bcol, t):
+        self._put(bch, bcol, 0, 0, "┌", self._shade(CYAN, 0.6))
+        self._put(bch, bcol, self.w - 1, 0, "┐", self._shade(CYAN, 0.6))
+        self._put(bch, bcol, 0, self.h - 1, "└", self._shade(CYAN, 0.6))
+        self._put(bch, bcol, self.w - 1, self.h - 1, "┘", self._shade(CYAN, 0.6))
+        for i in range(1, 7):
+            s = self._shade(CYAN, 0.6 - i * 0.07)
+            self._put(bch, bcol, i, 0, "─", s)
+            self._put(bch, bcol, self.w - 1 - i, 0, "─", s)
+            self._put(bch, bcol, i, self.h - 1, "─", s)
+            self._put(bch, bcol, self.w - 1 - i, self.h - 1, "─", s)
+
+    def _compose(self, t):
+        bch, bcol = self._blank()
+        self._draw_particles(bch, bcol, t)
+        self._draw_frame_chrome(bch, bcol, t)
+
+        compact = self.h < 30 or self.w < 70
+        # top wordmark: VEDA under the VEDA theme (like the desktop HUD's core
+        # caption and the native saver), Celestial Being under Exia.
+        if THEME == "veda-terminal":
+            self._center(bch, bcol, 1, "V   E   D   A", GOLD)
+        else:
+            self._center(bch, bcol, 1, "C E L E S T I A L   B E I N G", self._shade(GOLD, 0.8))
+        if not compact:
+            self._center(bch, bcol, 2, "V A S T   E A R T H   D A T A   A N A L Y Z E R", CYAN)
+
+        clock_top = 4 if not compact else 3
+        big = self.h >= 24
+        after_clock = self._draw_clock(bch, bcol, clock_top, big)
+
+        # core sits between clock and news
+        # Entries take up to two lines each.
+        news_rows = 2 if compact else (6 if self.h >= 40 else 5 if self.h >= 30 else 3)
+        news_top = self.h - news_rows - 2
+        # The core emits headlines straight onto the archive's top row.
+        core_top = after_clock + 1
+        core_bottom = news_top - 3
+        cy = (core_top + core_bottom) // 2
+        core = (self.w // 2, cy)
+        self.core = core
+        r = max(2.5, min((core_bottom - core_top) / 2 - 0.5, 9.0))
+
+        focus = self.emit.item["source"] if self.emit is not None else None
+        self._place_sources(core_top, core_bottom + 1, r)
+        self._draw_network(bch, bcol, t, focus)
+        self._draw_lattice(bch, bcol, t, r)
+        self._update_streams(t, core)
+        self._draw_streams(bch, bcol, t, core)
+        self.flash *= 0.86 ** self.speed
+
+        self._draw_news(bch, bcol, news_top, news_rows, t)
+        if self.emit is None and t >= self.next_emit_at:
+            self._start_emit(t, news_top)
+        self._draw_emit(bch, bcol, t, core)
+        footer = "PRESS ANY KEY TO RESUME"
+        self._center(bch, bcol, self.h - 1, footer, self._shade(MUTED, 0.9))
+        return bch, bcol
+
+    # -- diff render --------------------------------------------------------
+    def _render(self, bch, bcol):
+        out = []
+        prev = self.cur
+        full = prev is None
+        last_col = None
+        cy = cx = -1
+        for y in range(self.h):
+            # Whole-row comparison runs in C; most rows don't change per frame.
+            if not full and bch[y] == prev[0][y] and bcol[y] == prev[1][y]:
+                continue
+            for x in range(self.w):
+                ch = bch[y][x]
+                col = bcol[y][x]
+                if not full:
+                    if ch == prev[0][y][x] and col == prev[1][y][x]:
+                        continue
+                if y != cy or x != cx:
+                    out.append(f"\x1b[{y + 1};{x + 1}H")
+                if ch == " ":
+                    out.append(" ")
+                else:
+                    if col != last_col:
+                        out.append(f"\x1b[38;2;{col[0]};{col[1]};{col[2]}m")
+                        last_col = col
+                    out.append(ch)
+                cx, cy = x + 1, y
+        if out:
+            sys.stdout.write("".join(out))
+            sys.stdout.flush()
+        self.cur = (bch, bcol)
+
+    def resize(self):
+        self.w, self.h = self._size()
+        self.cur = None
+        self.lattice_key = self.network_key = None
+        self.row_cache.clear()
+        self._init_particles()
+        sys.stdout.write("\x1b[2J")
+
+    # -- power ------------------------------------------------------------
+    def _check_power(self, t):
+        """On battery the screensaver drops to 5fps (motion is time-based, so
+        only smoothness changes). Re-read every 10s."""
+        if t - self.power_checked < 10:
+            return
+        self.power_checked = t
+        on_battery = False
+        base = "/sys/class/power_supply"
+        try:
+            for name in os.listdir(base):
+                if name.startswith("BAT"):
+                    with open(os.path.join(base, name, "status")) as f:
+                        on_battery = on_battery or f.read().strip() == "Discharging"
+        except OSError:
+            pass
+        self.on_battery = on_battery
+        self.fps = min(5, self.base_fps) if on_battery else self.base_fps
+        self.speed = 10 / self.fps
+
+    def frame(self, t):
+        self._check_power(t)
+        self._load_news()
+        bch, bcol = self._compose(t)
+        self._render(bch, bcol)
+
+
+def main():
+    fps = 10
+    news_path = NEWS_PATH
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--fps" and i + 1 < len(args):
+            fps = max(4, min(30, int(args[i + 1]))); i += 2
+        elif args[i] == "--news" and i + 1 < len(args):
+            news_path = os.path.expanduser(args[i + 1]); i += 2
+        else:
+            i += 1
+
+    if not sys.stdout.isatty():
+        print("veda-screensaver needs a terminal.", file=sys.stderr)
+        return 1
+
+    fd = sys.stdin.fileno()
+    old = None
+    try:
+        old = termios.tcgetattr(fd)
+        tty.setraw(fd)
+    except (termios.error, ValueError):
+        old = None
+
+    resized = {"flag": False}
+    signal.signal(signal.SIGWINCH, lambda *_: resized.__setitem__("flag", True))
+
+    sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[2J")  # alt screen, hide cursor, clear
+    sys.stdout.flush()
+
+    start = time.monotonic()
+    rc = 0
+    try:
+        veda = Veda(fps, news_path)
+        while True:
+            # any key / byte on stdin ends the screensaver
+            r, _, _ = select.select([fd], [], [], 0)
+            if r:
+                try:
+                    if os.read(fd, 64):
+                        break
+                except OSError:
+                    break
+            if resized["flag"]:
+                resized["flag"] = False
+                veda.resize()
+            veda.frame(time.monotonic() - start)
+            # pace to target fps (drops to 5 on battery)
+            period = 1.0 / veda.fps
+            nap = period - ((time.monotonic() - start) % period)
+            time.sleep(max(0.0, min(period, nap)))
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        # The terminal is restored below; keep the reason somewhere readable.
+        rc = 1
+        try:
+            import traceback
+            with open(os.path.expanduser("~/.cache/veda-screensaver.log"), "a") as log:
+                log.write(datetime.now().isoformat(timespec="seconds") + "\n" + traceback.format_exc())
+        except OSError:
+            pass
+    finally:
+        sys.stdout.write("\x1b[0m\x1b[?25h\x1b[2J\x1b[?1049l")
+        sys.stdout.flush()
+        if old is not None:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            except (termios.error, ValueError):
+                pass
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

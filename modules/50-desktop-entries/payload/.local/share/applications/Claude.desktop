@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=Claude
+Comment=Claude
+Exec=xdg-terminal-exec --app-id=claude --title=Claude -- claude
+Path=/home/vedacool/Work
+Terminal=false
+Type=Application
+Icon=claude
+StartupNotify=true

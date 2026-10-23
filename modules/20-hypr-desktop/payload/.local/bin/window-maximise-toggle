@@ -1,0 +1,61 @@
+#!/bin/bash
+# Windows-style maximise for floating windows (bound to SUPER+M).
+# Hyprland's own "maximized" mode takes a window out of floating, so other
+# floating windows stay drawn on top of it. This keeps the window floating and
+# just stretches it over the usable area (below the bar); pressing again puts
+# back the size and position it had before.
+
+state_dir="${XDG_RUNTIME_DIR:-/tmp}/window-maximise"
+mkdir -p "$state_dir"
+
+win=$(hyprctl activewindow -j)
+addr=$(jq -r '.address // empty' <<<"$win")
+[[ -n $addr && $addr != null ]] || exit 0
+state="$state_dir/$addr"
+
+dispatch() { hyprctl dispatch "$1" >/dev/null; }
+
+# Leave real fullscreen (SUPER+F) or Hyprland's maximized state first.
+if [[ $(jq -r '.fullscreen' <<<"$win") != 0 ]]; then
+  dispatch "hl.dsp.window.fullscreen({ window = 'address:$addr', mode = 'maximized', action = 'unset' })" 2>/dev/null
+  dispatch "hl.dsp.window.fullscreen({ window = 'address:$addr', mode = 'fullscreen', action = 'unset' })" 2>/dev/null
+fi
+
+# State: "<x> <y> <w> <h> <maximised x,y,w,h>". Restore if the window is still
+# exactly as maximised. If it was dragged or resized since, maximise it again
+# but keep remembering its original size, like Windows does. (State files are
+# removed when a window closes, by window-minimise-watch, since Hyprland reuses
+# window addresses.)
+before=""
+if [[ -f $state ]]; then
+  read -r x y w h mgeom <"$state"
+  if [[ $mgeom == "$(jq -r '"\(.at[0]),\(.at[1]),\(.size[0]),\(.size[1])"' <<<"$win")" ]]; then
+    rm -f "$state"
+    dispatch "hl.dsp.window.resize({ window = 'address:$addr', x = $w, y = $h })"
+    dispatch "hl.dsp.window.move({ window = 'address:$addr', x = $x, y = $y })"
+    exit 0
+  fi
+  before="$x $y $w $h"
+fi
+
+# A tiled window (SUPER+T) becomes floating, like any maximised window here.
+if [[ $(jq -r '.floating' <<<"$win") != true ]]; then
+  dispatch "hl.dsp.window.float({ window = 'address:$addr', action = 'set' })"
+  win=$(hyprctl activewindow -j)
+fi
+
+[[ -n $before ]] || before=$(jq -r '"\(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])"' <<<"$win")
+
+mon=$(hyprctl monitors -j | jq -c --argjson id "$(jq '.monitor' <<<"$win")" '.[] | select(.id == $id)')
+border=$(hyprctl getoption general:border_size -j 2>/dev/null | jq -r '.int // 2')
+read -r mx my mw mh rl rt rr rb < <(jq -r '"\(.x) \(.y) \((.width / .scale) | floor) \((.height / .scale) | floor) \(.reserved | join(" "))"' <<<"$mon")
+
+x=$((mx + rl + border)); y=$((my + rt + border))
+w=$((mw - rl - rr - 2 * border)); h=$((mh - rt - rb - 2 * border))
+# Resize first: Hyprland resizes around the window's centre, which shifts it.
+dispatch "hl.dsp.window.resize({ window = 'address:$addr', x = $w, y = $h })"
+dispatch "hl.dsp.window.move({ window = 'address:$addr', x = $x, y = $y })"
+dispatch "hl.dsp.window.bring_to_top()"
+# Record what Hyprland actually applied (min sizes or rounding can differ).
+after=$(hyprctl clients -j | jq -r --arg a "$addr" '.[] | select(.address == $a) | "\(.at[0]),\(.at[1]),\(.size[0]),\(.size[1])"')
+echo "$before ${after:-$x,$y,$w,$h}" >"$state"

@@ -1,0 +1,40 @@
+# Gundam 00 — VEDA quantum terminal. Tuned to sit with the
+# vedacool.veda-terminal desktop HUD: phosphor green is the primary signal
+# colour (borders, highlights), the near-black green background matches the
+# HUD panels, and gold marks VEDA's core and important details.
+mode = "dark"
+
+accent = "#6ee7a0"
+selection = "#1d4a33"
+muted = "#4d6e5c"
+
+# Window borders: green-to-gold sweep, like the core's data rings; unfocused
+# windows get a dim green edge instead of neutral grey.
+hyprland_active_border = "rgba(6ee7a0ee) rgba(e8c25aee) 45deg"
+hyprland_inactive_border = "rgba(6ee7a033)"
+
+background = "#07120d"
+dark_background = "#050d09"
+darker_background = "#020705"
+lighter_background = "#10261b"
+
+foreground = "#e3fbe9"
+dark_foreground = "#6a8a76"
+light_foreground = "#bfdcc8"
+bright_foreground = "#f6fff8"
+
+red = "#e8394f"
+yellow = "#e8c25a"
+orange = "#e8913c"
+green = "#6ee7a0"
+cyan = "#5fd9c4"
+blue = "#4f9bd9"
+magenta = "#d77be8"
+brown = "#8a6a3a"
+
+bright_red = "#ff5a6c"
+bright_yellow = "#ffdb85"
+bright_green = "#a8ffc8"
+bright_cyan = "#93f0e0"
+bright_blue = "#86c0f0"
+bright_magenta = "#eeaaf8"

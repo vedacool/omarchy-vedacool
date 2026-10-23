@@ -1,0 +1,32 @@
+# Gundam 00 — Celestial Being deep space, Exia blue/white/red, GN particle green
+mode = "dark"
+
+accent = "#3dffb0"
+selection = "#1d3357"
+muted = "#3c4c68"
+
+background = "#0b1220"
+dark_background = "#080d18"
+darker_background = "#04070f"
+lighter_background = "#16223a"
+
+foreground = "#dce6f2"
+dark_foreground = "#5b6b85"
+light_foreground = "#b8c6d9"
+bright_foreground = "#f4f8fc"
+
+red = "#e8384f"
+yellow = "#f5c518"
+orange = "#ff8a3d"
+green = "#3dffb0"
+cyan = "#5ce1e6"
+blue = "#3a7bff"
+magenta = "#ff3a6e"
+brown = "#7a5c3a"
+
+bright_red = "#ff5c70"
+bright_yellow = "#ffd84d"
+bright_green = "#7dffc9"
+bright_cyan = "#8cf0f3"
+bright_blue = "#6b9dff"
+bright_magenta = "#ff6f94"

@@ -1,0 +1,56 @@
+#!/bin/bash
+# Launches the VEDA screensaver on every monitor. Called by the cloned idle
+# plugin (~/.config/omarchy/plugins/vedacool.idle) instead of
+# omarchy-launch-screensaver. Keeps the window class org.omarchy.screensaver so
+# Omarchy's fullscreen rule and idle/lock tracking still apply.
+
+pgrep -f '[o]rg.omarchy.screensaver' && exit 0
+
+if omarchy-toggle-enabled screensaver-off && [[ $1 != "force" ]]; then
+  exit 1
+fi
+
+# Native VEDA screensaver (drawn by the shell, same core as the desktop HUD)
+# when ~/.local/share/veda-screensaver/mode says "native" and the VEDA plugin
+# is running (it only is under the veda-terminal theme). Otherwise the
+# foot/python one below. Switch: echo native|terminal > that file.
+mode_file="$HOME/.local/share/veda-screensaver/mode"
+if [[ $(cat "$mode_file" 2>/dev/null) == native ]] &&
+  omarchy-shell vedaterm screensaver on 2>/dev/null | grep -q '"shown":true'; then
+  exit 0
+fi
+
+# VEDA is written for foot; anything else gets the stock screensaver.
+command -v foot >/dev/null || exec omarchy-launch-screensaver "$@"
+
+focused=$(omarchy-hyprland-monitor-focused)
+session="$HOME/.local/bin/veda-screensaver-session"
+config="$HOME/.local/share/veda-screensaver/foot.ini"
+
+hypr_focus_monitor() {
+  hyprctl dispatch "hl.dsp.focus({ monitor = \"$1\" })" >/dev/null 2>&1 || hyprctl dispatch focusmonitor "$1" >/dev/null
+}
+
+hypr_exec() {
+  local command
+  printf -v command '%q ' "$@"
+  hyprctl dispatch "hl.dsp.exec_cmd([[$command]])" >/dev/null 2>&1 || hyprctl dispatch exec -- bash -lc "$command" >/dev/null
+}
+
+SOCKET="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+exec {events}< <(socat -U - "UNIX-CONNECT:$SOCKET")
+
+wait_for_screensaver_window() {
+  local line deadline=$((SECONDS + 5))
+  while ((SECONDS < deadline)) && IFS= read -r -t $((deadline - SECONDS)) -u "$events" line; do
+    [[ $line == openwindow\>\>*,org.omarchy.screensaver,* ]] && return 0
+  done
+}
+
+for m in $(hyprctl monitors -j | jq -r '.[] | .name'); do
+  hypr_focus_monitor "$m"
+  hypr_exec foot --app-id=org.omarchy.screensaver --config="$config" -e "$session"
+  wait_for_screensaver_window
+done
+
+hypr_focus_monitor "$focused"

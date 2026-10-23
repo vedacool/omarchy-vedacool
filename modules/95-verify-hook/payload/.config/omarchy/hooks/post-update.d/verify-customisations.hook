@@ -1,0 +1,634 @@
+#!/bin/bash
+
+# Runs from `omarchy update` (post-update hook), after packages and migrations.
+# Checks vedacool's local customisations survived the update and re-applies
+# the ones that are safe to re-apply. Reference: memory os-config-changes-log.md
+#
+# Safety rules for this file:
+#  - No `set -e`: a hook must never abort the update it runs inside.
+#  - Every fix is idempotent, guarded by a check, and appends/edits only what is ours.
+#  - Files are backed up (*.bak.postupdate.<ts>) before being changed.
+#  - Hyprland edits are reloaded and validated once; on config errors every
+#    edited file is rolled back.
+#  - System files use `sudo -n` (never prompts); if it cannot, it says so.
+#  - DRY_RUN=1 prints what would change and touches nothing.
+
+DRY_RUN=${DRY_RUN:-0}
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-customisations"
+HYPR="$HOME/.config/hypr"
+TS=$(date +%s)
+fixed=()
+warned=()
+hypr_files=()   # hypr files edited this run (for rollback)
+hypr_pending=() # descriptions of hypr fixes awaiting validation
+
+ok()   { echo "  ok     $1"; }
+fix()  { echo "  FIXED  $1"; fixed+=("$1"); }
+warn() { echo "  WARN   $1"; warned+=("$1"); }
+act()  { if ((DRY_RUN)); then echo "  [dry-run] $*"; return 0; fi; "$@"; }
+
+backup() { [[ -f $1 ]] && act cp -p "$1" "$1.bak.postupdate.$TS"; }
+
+hypr_live() { command -v hyprctl >/dev/null && [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; }
+
+# hypr_touch FILE — back the file up (once per run) before it is edited.
+hypr_touch() {
+  [[ " ${hypr_files[*]} " == *" $1 "* ]] && return
+  backup "$1"
+  hypr_files+=("$1")
+}
+
+# uncommented FILE — the file's non-comment lines (Lua comments start with --).
+uncommented() { grep -vE '^[[:space:]]*--' "$1"; }
+
+# ensure_block FILE REGEX DESC CONTENT — append the Lua snippet CONTENT unless
+# REGEX matches an uncommented line of FILE.
+ensure_block() {
+  local file=$1 regex=$2 desc=$3 content=$4
+  if [[ ! -f $file ]]; then warn "$desc: $file is missing, not recreating"; return; fi
+  if uncommented "$file" | grep -qE -- "$regex"; then ok "$desc"; return; fi
+  if ((DRY_RUN)); then echo "  [dry-run] append '$desc' to $file"; fix "$desc"; return; fi
+  hypr_touch "$file"
+  printf '\n%s\n' "$content" >>"$file"
+  echo "  fixing $desc (pending validation)"; hypr_pending+=("$desc")
+}
+
+# hypr_finish — reload once, validate, roll everything back on config errors.
+hypr_finish() {
+  ((${#hypr_files[@]})) || return 0
+  if ! hypr_live; then
+    for d in "${hypr_pending[@]}"; do fix "$d (Hyprland not running, unvalidated)"; done
+    return 0
+  fi
+  timeout 10 hyprctl reload >/dev/null 2>&1
+  sleep 1
+  if [[ -z $(timeout 10 hyprctl configerrors 2>/dev/null | tr -d '[:space:]') ]]; then
+    for d in "${hypr_pending[@]}"; do fix "$d"; done
+    return 0
+  fi
+  for f in "${hypr_files[@]}"; do cp -p "$f.bak.postupdate.$TS" "$f"; done
+  timeout 10 hyprctl reload >/dev/null 2>&1
+  warn "re-applied Hyprland settings caused config errors; rolled back: ${hypr_pending[*]}"
+}
+
+# ensure_line FILE LINE DESC — append LINE if no identical line exists.
+ensure_line() {
+  local file=$1 line=$2 desc=$3
+  if [[ -f $file ]] && grep -qxF -- "$line" "$file"; then ok "$desc"; return; fi
+  if [[ ! -f $file ]]; then warn "$desc: $file is missing, not recreating"; return; fi
+  backup "$file"
+  if ((DRY_RUN)); then echo "  [dry-run] append to $file: $line"; else printf '%s\n' "$line" >>"$file"; fi
+  fix "$desc"
+}
+
+# ensure_sysfile PATH MODE DESC CONTENT — restore a root-owned file if MISSING.
+# A file that exists but differs is only reported, never overwritten.
+ensure_sysfile() {
+  local path=$1 mode=$2 desc=$3 content=$4 tmp
+  if [[ -f $path ]]; then
+    if [[ "$(<"$path")" == "$content" ]]; then ok "$desc"; else warn "$desc: $path differs from what was installed, left alone"; fi
+    return
+  fi
+  if ((DRY_RUN)); then echo "  [dry-run] would restore $path (mode $mode) with sudo -n"; fix "$desc (dry-run)"; return; fi
+  tmp=$(mktemp)
+  printf '%s\n' "$content" >"$tmp"
+  if sudo -n true 2>/dev/null && sudo -n install -D -m "$mode" "$tmp" "$path"; then
+    fix "$desc restored"
+  else
+    warn "$desc: $path is missing and sudo needs a password. Ask Claude to restore it (contents are in os-config-changes-log)"
+  fi
+  rm -f "$tmp"
+}
+
+echo "Verifying local customisations..."
+
+# ---------------------------------------------------------------- system files
+echo "System files (lid hibernate, wifi resume)"
+ensure_sysfile /etc/systemd/logind.conf.d/30-lid-hibernate.conf 644 "lid close hibernates" \
+'[Login]
+HandleLidSwitch=hibernate
+HandleLidSwitchExternalPower=hibernate'
+
+ensure_sysfile /etc/systemd/system-sleep/ath9k-resume 755 "ath9k reload after hibernate" \
+'#!/bin/bash
+
+# Reload ath9k after resuming from hibernate.
+# The AR9285 comes back in a stale state: it associates, but the WPA 4-way
+# handshake times out, which NetworkManager reports as "wrong password".
+
+sleep_action=${SYSTEMD_SLEEP_ACTION:-$2}
+
+if [[ $1 == "post" && ( $sleep_action == "hibernate" || $sleep_action == "suspend-then-hibernate" ) ]]; then
+  modprobe -r ath9k && modprobe ath9k
+fi'
+
+if [[ -f /etc/systemd/system-sleep/ath9k-resume && ! -x /etc/systemd/system-sleep/ath9k-resume ]]; then
+  warn "ath9k-resume exists but is not executable (systemd will skip it): sudo chmod 755 /etc/systemd/system-sleep/ath9k-resume"
+fi
+
+# ------------------------------------------------- lock screen after hibernate
+echo "Lock behaviour (single disk password on wake)"
+unit_link="$HOME/.config/systemd/user/omarchy-sleep-lock.service"
+if [[ "$(readlink "$unit_link" 2>/dev/null)" == /dev/null ]]; then
+  ok "omarchy-sleep-lock.service masked"
+else
+  act systemctl --user mask --now omarchy-sleep-lock.service >/dev/null 2>&1
+  fix "omarchy-sleep-lock.service re-masked"
+fi
+
+ensure_block "$HYPR/bindings.lua" 'hl\.unbind\("switch:on:Lid Switch"\)' "lid-close lock override" \
+'-- Lid close hibernates (logind), and the disk password on wake is the only
+-- password wanted, so skip Omarchy'"'"'s lock-on-lid-close (omarchy-system-lid-close
+-- locks, then reconciles monitors). Keep the monitor/clamshell reconcile.
+-- Was: switch:on:Lid Switch -> omarchy-system-lid-close
+hl.unbind("switch:on:Lid Switch")
+o.bind("switch:on:Lid Switch", nil, "omarchy-hyprland-monitor-clamshell", { locked = true })'
+
+ensure_block "$HYPR/bindings.lua" 'window-maximise-toggle' "SUPER+M floating maximise / SUPER+N minimise" \
+'-- Windows-style maximise / minimise (2026-10-03). Maximise keeps the window
+-- floating (Hyprland'"'"'s own "maximized" drops it under other floating windows)
+-- and fills the screen below the bar; press again to restore. Minimise hides
+-- the window in special:minimized; click it in the dock (or ALT+TAB) to bring
+-- it back, handled by window-minimise-watch (autostart.lua).
+-- SUPER+F stays true fullscreen.
+o.bind("SUPER + M", "Maximise", "/home/vedacool/.local/bin/window-maximise-toggle")
+o.bind("SUPER + N", "Minimise", hl.dsp.window.move({ workspace = "special:minimized", follow = false }))'
+if uncommented "$HYPR/bindings.lua" 2>/dev/null | grep -q 'fullscreen({ mode = "maximized" })' \
+  && uncommented "$HYPR/bindings.lua" | grep -q '"SUPER + M"' && ! uncommented "$HYPR/bindings.lua" | grep -q window-maximise-toggle; then
+  warn "bindings.lua has the OLD SUPER+M (Hyprland maximized, sinks under floating windows); remove that line"
+fi
+for f in window-maximise-toggle window-minimise-watch; do
+  [[ -x $HOME/.local/bin/$f ]] || warn "~/.local/bin/$f is missing: SUPER+M / SUPER+N restore will not work"
+done
+ensure_block "$HYPR/autostart.lua" 'window-minimise-watch' "minimised-window restore watcher at startup" \
+'-- Brings minimised windows (SUPER+N) back when clicked in the dock or ALT+TABbed to.
+o.launch_on_start("/home/vedacool/.local/bin/window-minimise-watch")'
+# The dock must list apps on special workspaces, or minimised windows vanish from it.
+if grep -qE 'nwg-dock-hyprland.*-iw[ =][^ ]*special' "$HYPR/autostart.lua" 2>/dev/null; then
+  warn "the dock now ignores special workspaces (-iw special): minimised windows won't show in it"
+fi
+
+# SUPER+M and SUPER+N were free in Omarchy's defaults on 2026-10-03; if an
+# update takes one, both bindings would fire on one press.
+for key in M N; do
+  if grep -rqE "\"SUPER \\+ $key\"" /usr/share/omarchy/default/hypr/ 2>/dev/null; then
+    warn "Omarchy now has its own SUPER+$key binding, clashing with ours: add hl.unbind(\"SUPER + $key\") before it in bindings.lua or pick another key"
+  fi
+done
+
+if ! grep -q "omarchy-system-lid-close" /usr/share/omarchy/default/hypr/bindings/utilities.lua 2>/dev/null; then
+  warn "Omarchy's default lid binding changed (no longer omarchy-system-lid-close): re-check the lid override in bindings.lua"
+fi
+
+# ---------------------------------------------------------- hyprland settings
+echo "Hyprland settings (floating windows, pointer, snapping, GPU, input, dock, scale)"
+ensure_block "$HYPR/hyprland.lua" 'o\.window\("\.\*",[[:space:]]*\{[[:space:]]*float[[:space:]]*=[[:space:]]*true' "all windows float" \
+'-- Windows-style: every window floats (overlapping/free-form). SUPER+T toggles
+-- a window back to tiled.
+o.window(".*", { float = true })'
+ensure_block "$HYPR/hyprland.lua" 'o\.window\(\{[[:space:]]*tag[[:space:]]*=[[:space:]]*"chromium-based-browser"[[:space:]]*\},[[:space:]]*\{[[:space:]]*float[[:space:]]*=[[:space:]]*true' "Chrome floats too (overrides Omarchy's browser tile rule)" \
+'-- Omarchy'"'"'s browser.lua gives the chromium-based-browser tag (Chrome, and
+-- Chrome web apps like WhatsApp) tile = true, which beats the float rule above.
+-- Float them too, like every other window. Added 2026-10-03.
+o.window({ tag = "chromium-based-browser" }, { float = true })'
+# If Omarchy renames the tag, the override above silently stops matching.
+grep -q 'tag = "chromium-based-browser" }, {.*tile = true' /usr/share/omarchy/default/hypr/apps/browser.lua 2>/dev/null \
+  || warn "Omarchy's browser tile rule changed (tag chromium-based-browser): check Chrome still opens floating"
+
+ensure_block "$HYPR/looknfeel.lua" 'no_warps[[:space:]]*=[[:space:]]*true' "pointer stays put on focus/workspace change" \
+'-- Keep the mouse pointer where it is when focus or workspace changes
+-- (e.g. clicking an app in the dock).
+hl.config({
+  cursor = {
+    no_warps = true,
+    warp_on_change_workspace = 0,
+  },
+})'
+
+ensure_block "$HYPR/looknfeel.lua" '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*false' "animations disabled" \
+'-- Disabled for this laptop'"'"'s aging Radeon HD 6730M (legacy radeon driver):
+-- compositor animations were a likely source of stutter/hangs on this GPU.
+hl.config({
+  animations = {
+    enabled = false,
+  },
+})'
+
+ensure_block "$HYPR/looknfeel.lua" '^[[:space:]]*snap[[:space:]]*=[[:space:]]*\{' "magnetic window edge-snapping" \
+'-- Magnetic edge-snapping for floating windows while dragging.
+hl.config({
+  general = {
+    snap = {
+      enabled = true,
+    },
+  },
+})'
+
+ensure_block "$HYPR/looknfeel.lua" 'resize_on_border[[:space:]]*=[[:space:]]*true' "border-drag resize" \
+'-- Resize floating windows by dragging their border/corner directly.
+hl.config({
+  general = {
+    resize_on_border = true,
+  },
+})'
+
+ensure_block "$HYPR/input.lua" 'numlock_by_default[[:space:]]*=[[:space:]]*false' "NumLock off at start" \
+'-- Start with numlock off by default (Omarchy'"'"'s default is on).
+hl.config({
+  input = {
+    numlock_by_default = false,
+  },
+})'
+
+ensure_block "$HYPR/autostart.lua" 'nwg-dock-hyprland -d -i 24' "auto-hiding dock at startup" \
+'-- Windows-style auto-hiding taskbar dock at the bottom (start button opens the Omarchy menu)
+o.launch_on_start("nwg-dock-hyprland -d -i 24 -lp start -c '"'"'omarchy-menu toggle'"'"'")'
+
+# UI scale: this laptop's screen wants 1/1. Only reset-to-default (2 / "auto")
+# is rewritten; any other value is the user's choice and is left alone.
+mon="$HYPR/monitors.lua"
+if [[ -f $mon ]]; then
+  if grep -qE '^local omarchy_gdk_scale = 1$' "$mon" && grep -qE '^local omarchy_monitor_scale = 1$' "$mon"; then
+    ok "display scale 1 / GDK scale 1"
+  elif grep -qE '^local omarchy_gdk_scale = 2$' "$mon" && grep -qE '^local omarchy_monitor_scale = "auto"$' "$mon"; then
+    if ((DRY_RUN)); then
+      echo "  [dry-run] set display scale 1/1 in $mon"; fix "display scale 1/1"
+    else
+      hypr_touch "$mon"
+      sed -i -E 's/^local omarchy_gdk_scale = 2$/local omarchy_gdk_scale = 1/; s/^local omarchy_monitor_scale = "auto"$/local omarchy_monitor_scale = 1/' "$mon"
+      echo "  fixing display scale 1/1 (pending validation)"; hypr_pending+=("display scale 1/1")
+    fi
+  else
+    warn "monitors.lua scale is neither 1/1 nor Omarchy's default; left alone"
+  fi
+else
+  warn "monitors.lua missing"
+fi
+
+hypr_finish
+
+if hypr_live; then
+  n=$(timeout 10 hyprctl binds 2>/dev/null | grep -c "key: switch:on:Lid Switch")
+  if [[ $n == 1 ]]; then ok "exactly one live lid-close bind"; else warn "expected 1 live 'switch:on:Lid Switch' bind, found $n: lid may still lock (or not clamshell). Test a lid close"; fi
+fi
+
+# ------------------------------------------------------------------ shell bar
+echo "Omarchy shell (opaque bar, plugin layout, font)"
+shell_json="$HOME/.config/omarchy/shell.json"
+if [[ -f $shell_json ]] && jq -e '.bar.transparent == false' "$shell_json" >/dev/null 2>&1; then
+  ok "bar.transparent is false"
+elif [[ -f $shell_json ]] && jq empty "$shell_json" >/dev/null 2>&1; then
+  backup "$shell_json"
+  if ((DRY_RUN)); then
+    echo "  [dry-run] set .bar.transparent=false in $shell_json"
+  else
+    tmp=$(mktemp)
+    if jq '.bar.transparent = false' "$shell_json" >"$tmp" && jq empty "$tmp" >/dev/null 2>&1; then
+      cat "$tmp" >"$shell_json"
+    fi
+    rm -f "$tmp"
+  fi
+  fix "bar.transparent set to false again"
+else
+  warn "shell.json missing or not valid JSON, left alone"
+fi
+
+# Report only: the bar layout is positional, so restoring it needs a human.
+if [[ -f $shell_json ]] && jq empty "$shell_json" >/dev/null 2>&1; then
+  for id in vedacool.network vedacool.monitor vedacool.netspeed vedacool.zoom-controls; do
+    [[ -d $HOME/.config/omarchy/plugins/$id ]] || warn "plugin directory ~/.config/omarchy/plugins/$id is missing"
+    if jq -e --arg id "$id" '[.. | objects | select(.id? == $id)] | length > 0' "$shell_json" >/dev/null 2>&1; then
+      ok "bar layout uses $id"
+    else
+      warn "bar layout no longer uses $id (shell.json was reset?): ask Claude to re-apply the layout (see os-config-changes-log)"
+    fi
+  done
+  for id in omarchy.network omarchy.monitor; do
+    if jq -e --arg id "$id" '[.. | objects | select(.id? == $id)] | length > 0' "$shell_json" >/dev/null 2>&1; then
+      warn "bar layout shows built-in $id instead of the vedacool clone"
+    fi
+  done
+fi
+
+# Gundam 00 desktop (2026-10-03, memory: gundam-desktop-setup). The HUD only
+# runs while its plugins[] entry exists, and `omarchy refresh shell` drops it.
+# The entry must be an object: a bare "vedacool.gn-hud" string is silently
+# ignored by the shell, so that form is converted too.
+gnhud_dir="$HOME/.config/omarchy/plugins/vedacool.gn-hud"
+if [[ -d $gnhud_dir ]]; then
+  missing=()
+  for f in manifest.json GnHud.qml HudScreen.qml ArcBand.qml SoftKey.qml NewsPanel.qml exia.png; do
+    [[ -f $gnhud_dir/$f ]] || missing+=("$f")
+  done
+  if ((${#missing[@]})); then warn "GN HUD plugin is missing files: ${missing[*]}"; else ok "GN HUD plugin files present"; fi
+
+  # Power-saving rules added 2026-10-03 (report only: GnHud.qml is user-owned,
+  # so only a restore or hand edit loses them; patching QML blind is riskier).
+  #   unplugged: on battery, 3fps animation and 6s stats instead of 10fps/2s
+  #   bigWindow: pause when a floating window covers >= 85% of the screen
+  if [[ -f $gnhud_dir/GnHud.qml ]]; then
+    grep -q 'readonly property bool unplugged: batteryStatus === "Discharging"' "$gnhud_dir/GnHud.qml" \
+      && grep -q 'root.unplugged ? 300 : 100' "$gnhud_dir/GnHud.qml" \
+      && ok "GN HUD battery slow-down rule present" \
+      || warn "GN HUD battery slow-down rule is gone from GnHud.qml (restore a GnHud.qml.bak.* or ask Claude; see gundam-desktop-setup memory)"
+    grep -q 'property bool bigWindow' "$gnhud_dir/GnHud.qml" \
+      && ok "GN HUD big-window pause rule present" \
+      || warn "GN HUD big-window pause rule is gone from GnHud.qml"
+    # The live status only has these keys if the edited HUD actually loaded
+    # (a Qt/Quickshell upgrade can make a plugin fail to load silently).
+    if status=$(timeout 3 omarchy-shell gnhud status 2>/dev/null) && [[ -n $status ]]; then
+      if jq -e 'has("unplugged") and has("bigWindow")' <<<"$status" >/dev/null 2>&1; then
+        ok "GN HUD loaded with power-saving rules (unplugged=$(jq -r .unplugged <<<"$status"))"
+      else
+        warn "GN HUD is running without the power-saving rules: check journalctl --user | grep gn-hud for load errors"
+      fi
+    elif pgrep -x quickshell >/dev/null; then
+      warn "GN HUD did not answer 'omarchy-shell gnhud status' (plugin failed to load?): check journalctl --user | grep gn-hud"
+    fi
+  fi
+
+  if [[ -f $shell_json ]] && jq empty "$shell_json" >/dev/null 2>&1; then
+    if jq -e '(.plugins // []) | any(type == "object" and .id == "vedacool.gn-hud")' "$shell_json" >/dev/null 2>&1; then
+      ok "GN HUD enabled in shell.json"
+    else
+      backup "$shell_json"
+      if ((DRY_RUN)); then
+        echo "  [dry-run] add {\"id\": \"vedacool.gn-hud\"} to .plugins in $shell_json"
+      else
+        tmp=$(mktemp)
+        if jq '.plugins = ([(.plugins // [])[] | select(. != "vedacool.gn-hud")] + [{"id": "vedacool.gn-hud"}])' "$shell_json" >"$tmp" \
+          && jq empty "$tmp" >/dev/null 2>&1; then
+          cat "$tmp" >"$shell_json"
+        fi
+        rm -f "$tmp"
+      fi
+      fix "GN HUD re-enabled in shell.json (plugins entry was missing)"
+    fi
+  fi
+else
+  warn "GN HUD plugin directory $gnhud_dir is gone; the Gundam desktop HUD cannot run"
+fi
+
+# VEDA terminal desktop (2026-10-04, memory: gundam-desktop-setup). A second
+# One news fetcher shared by both HUD plugins (moved out of the plugin dirs
+# 2026-10-05); both GnHud.qml and VedaTerminal.qml point at it.
+news_fetcher="$HOME/.local/share/veda-news/fetch-news.py"
+if [[ -f $news_fetcher ]] && python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$news_fetcher" 2>/dev/null; then
+  ok "shared news fetcher present"
+else
+  warn "shared news fetcher missing or broken: $news_fetcher (restore from ~/.local/share/veda-backups/)"
+fi
+
+# HUD plugin for the veda-terminal theme; same plugins[] rules as the GN HUD.
+veda_dir="$HOME/.config/omarchy/plugins/vedacool.veda-terminal"
+if [[ -d $veda_dir ]]; then
+  missing=()
+  for f in manifest.json VedaTerminal.qml VedaScreen.qml VedaCore.qml VedaScreensaver.qml ArcBand.qml NewsPanel.qml; do
+    [[ -f $veda_dir/$f ]] || missing+=("$f")
+  done
+  if ((${#missing[@]})); then warn "VEDA terminal plugin is missing files: ${missing[*]}"; else ok "VEDA terminal plugin files present"; fi
+
+  if pgrep -x quickshell >/dev/null && ! omarchy-shell vedaterm status >/dev/null 2>&1; then
+    warn "VEDA terminal did not answer 'omarchy-shell vedaterm status' (plugin failed to load?)"
+  fi
+
+  if [[ -f $shell_json ]] && jq empty "$shell_json" >/dev/null 2>&1; then
+    if jq -e '(.plugins // []) | any(type == "object" and .id == "vedacool.veda-terminal")' "$shell_json" >/dev/null 2>&1; then
+      ok "VEDA terminal enabled in shell.json"
+    else
+      backup "$shell_json"
+      if ((DRY_RUN)); then
+        echo "  [dry-run] add {\"id\": \"vedacool.veda-terminal\"} to .plugins in $shell_json"
+      else
+        tmp=$(mktemp)
+        if jq '.plugins = ([(.plugins // [])[] | select(. != "vedacool.veda-terminal")] + [{"id": "vedacool.veda-terminal"}])' "$shell_json" >"$tmp" \
+          && jq empty "$tmp" >/dev/null 2>&1; then
+          cat "$tmp" >"$shell_json"
+        fi
+        rm -f "$tmp"
+      fi
+      fix "VEDA terminal re-enabled in shell.json (plugins entry was missing)"
+    fi
+  fi
+fi
+
+# VEDA screensaver (2026-10-03, memory: gundam-desktop-setup). The cloned idle
+# plugin vedacool.idle launches ~/.local/bin/veda-launch-screensaver instead of
+# the stock screensaver; `omarchy refresh shell` drops it and brings back the
+# built-in omarchy.idle, so it is re-enabled here (the enable command also
+# disables the built-in it was cloned from).
+veda_idle="$HOME/.config/omarchy/plugins/vedacool.idle"
+missing=()
+for f in "$HOME/Work/bin/veda-screensaver" "$HOME/.local/bin/veda-launch-screensaver" \
+  "$HOME/.local/bin/veda-screensaver-session" "$HOME/.local/share/veda-screensaver/foot.ini" \
+  "$veda_idle/Service.qml"; do
+  [[ -e $f ]] || missing+=("${f/#$HOME/\~}")
+done
+if ((${#missing[@]})); then
+  warn "VEDA screensaver is missing files (stock screensaver will run instead): ${missing[*]}"
+else
+  ok "VEDA screensaver files present"
+  # The native VEDA screensaver is a layer, not a window: it reports itself to
+  # the idle clone over IPC, and the clone's lock also hides it.
+  if [[ $(cat "$HOME/.local/share/veda-screensaver/mode" 2>/dev/null) == native ]]; then
+    if grep -q 'function screensaverOpened' "$veda_idle/Service.qml" && grep -q 'vedaterm screensaver hide' "$veda_idle/Service.qml"; then
+      ok "vedacool.idle has the native VEDA screensaver hooks"
+    else
+      warn "native VEDA screensaver is selected but vedacool.idle lost its screensaverOpened/hide hooks (lock may not fire): re-add them, or echo terminal > ~/.local/share/veda-screensaver/mode"
+    fi
+  fi
+  if grep -q 'veda-launch-screensaver' "$veda_idle/Service.qml"; then
+    ok "vedacool.idle launches VEDA"
+  else
+    warn "vedacool.idle no longer calls veda-launch-screensaver; re-apply the one-line edit in launchScreensaver()"
+  fi
+  # A Python upgrade could break the script; the launcher would then fall back
+  # to nothing visible. Parse only (no bytecode written, nothing run).
+  if python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$HOME/Work/bin/veda-screensaver" 2>/dev/null; then
+    ok "VEDA script parses with $(python3 -V 2>&1)"
+  else
+    warn "VEDA script no longer parses with $(python3 -V 2>&1); the screensaver will fail. Ask Claude to fix ~/Work/bin/veda-screensaver"
+  fi
+  # The launcher needs these; without foot it silently uses the stock screensaver.
+  for cmd in foot socat jq hyprctl; do
+    command -v "$cmd" >/dev/null || warn "VEDA launcher needs '$cmd', which is no longer installed (stock screensaver will run)"
+  done
+fi
+
+# veda-launch-screensaver and veda-screensaver-session are adapted copies of
+# Omarchy's omarchy-launch-screensaver and omarchy-screensaver. If an update
+# changes those (new hyprctl syntax, new window handling), the copies may need
+# the same change. Reported once per change, like the cloned plugins below.
+mkdir -p "$STATE_DIR" 2>/dev/null
+for src in omarchy-launch-screensaver omarchy-screensaver; do
+  path="/usr/share/omarchy/bin/$src"
+  [[ -f $path ]] || { warn "$src not found upstream; VEDA's launcher was copied from it, check it still works"; continue; }
+  now=$(sha256sum "$path" | cut -d' ' -f1)
+  stored=$(cat "$STATE_DIR/script-$src.sha" 2>/dev/null)
+  if [[ -z $stored ]]; then
+    ((DRY_RUN)) || echo "$now" >"$STATE_DIR/script-$src.sha"
+    ok "baseline of upstream $src recorded (VEDA copy)"
+  elif [[ $stored == "$now" ]]; then
+    ok "upstream $src unchanged (VEDA copy)"
+  else
+    ((DRY_RUN)) || echo "$now" >"$STATE_DIR/script-$src.sha"
+    warn "upstream $src changed in this update: ask Claude to diff it and update VEDA's launcher/session to match (reported once)"
+  fi
+done
+if [[ -d $veda_idle && -f $shell_json ]] && jq empty "$shell_json" >/dev/null 2>&1; then
+  if jq -e '(.plugins // []) | any(type == "object" and .id == "vedacool.idle")' "$shell_json" >/dev/null 2>&1; then
+    ok "vedacool.idle enabled in shell.json"
+  else
+    backup "$shell_json"
+    if act omarchy-plugin-enable vedacool.idle >/dev/null 2>&1; then
+      fix "VEDA idle plugin re-enabled (stock idle plugin had replaced it)"
+    else
+      warn "could not re-enable vedacool.idle (shell not running?): run omarchy plugin enable vedacool.idle"
+    fi
+  fi
+  if ! ((DRY_RUN)) && ! jq -e '(.disabledPlugins // []) | index("omarchy.idle")' "$shell_json" >/dev/null 2>&1; then
+    warn "built-in omarchy.idle is enabled alongside vedacool.idle (double lock/screensaver): run omarchy plugin disable omarchy.idle"
+  fi
+fi
+
+[[ -d $HOME/.config/omarchy/themes/gundam-00-raiser ]] || warn "theme gundam-00-raiser directory is gone"
+[[ -d $HOME/.config/omarchy/themes/veda-terminal ]] || warn "theme veda-terminal directory is gone"
+for font in Orbitron.ttf Michroma-Regular.ttf; do
+  [[ -f $HOME/.local/share/fonts/gn-hud/$font ]] || warn "HUD font $font missing from ~/.local/share/fonts/gn-hud (HUD falls back to plain fonts)"
+done
+
+# Report only: restoring the boot screen needs sudo and an initramfs rebuild.
+plymouth_now=$(omarchy-plymouth-current 2>/dev/null)
+if [[ $plymouth_now == "gundam-00-raiser" || $plymouth_now == "veda-terminal" ]]; then
+  ok "boot screen is $plymouth_now"
+else
+  warn "boot screen is '${plymouth_now:-unknown}', not a Gundam 00 one: run omarchy plymouth set by theme veda-terminal (or gundam-00-raiser)"
+fi
+
+if grep -qE '^base-size = 12$' "$HOME/.config/omarchy/shell.toml" 2>/dev/null; then
+  ok "font base-size 12"
+else
+  warn "~/.config/omarchy/shell.toml font base-size is not 12 (was set 2026-09-25); left alone"
+fi
+
+# ---------------------------------------------------------- apps and the dock
+echo "Apps, dock, browser flags, packages"
+ensure_line "$HOME/.config/chrome-flags.conf" "--disable-gpu" "Chrome --disable-gpu"
+ensure_line "$HOME/.config/chrome-flags.conf" "--enable-wayland-ime" "Chrome --enable-wayland-ime"
+ensure_line "$HOME/.config/chrome-flags.conf" "--wayland-text-input-version=3" "Chrome --wayland-text-input-version=3"
+ensure_line "$HOME/.config/chrome-flags.conf" "--force-device-scale-factor=0.8" "Chrome UI at 80% (more page on the 768px screen)"
+
+# WhatsApp is pinned by its window class (2026-10-03) so the running window
+# merges with the pinned icon; a bare "WhatsApp" pin shows a second icon.
+pins="$HOME/.cache/nwg-dock-pinned"
+whatsapp_pin="chrome-web.whatsapp.com__-Default"
+if [[ -f $pins ]]; then
+  # Claude unpinned 2026-10-03 at the user's request: Claude runs as the Omarchy
+  # agent window (own dock icon via org.omarchy.agent.desktop); do not re-add.
+  for app in google-chrome zoom "$whatsapp_pin"; do ensure_line "$pins" "$app" "dock pin: $app"; done
+  if grep -qx "WhatsApp" "$pins"; then
+    backup "$pins"
+    act sed -i '/^WhatsApp$/d' "$pins"
+    fix "removed old 'WhatsApp' dock pin (duplicate icon; pinned as $whatsapp_pin instead)"
+  fi
+else
+  warn "dock pin file $pins is gone (cache cleared?). Pins: google-chrome, zoom, $whatsapp_pin"
+fi
+
+# Dock icons for windows whose class has no desktop entry (2026-10-03):
+# without these the dock shows an orange "missing icon" placeholder.
+ensure_line "$HOME/.local/share/applications/WhatsApp.desktop" "StartupWMClass=chrome-web.whatsapp.com__-Default" "WhatsApp window gets the WhatsApp dock icon"
+agent_desktop="$HOME/.local/share/applications/org.omarchy.agent.desktop"
+if [[ -f $agent_desktop ]] && grep -q '^StartupWMClass=org.omarchy.agent$' "$agent_desktop"; then
+  ok "Omarchy agent window gets the Claude dock icon"
+else
+  if ((DRY_RUN)); then
+    echo "  [dry-run] recreate $agent_desktop"
+  else
+    cat >"$agent_desktop" <<'DESKTOP'
+[Desktop Entry]
+Version=1.0
+Name=Claude (agent)
+Comment=Omarchy agent window (omarchy-agent); gives it the Claude icon in the dock
+Exec=omarchy-agent
+Terminal=false
+Type=Application
+Icon=claude
+StartupWMClass=org.omarchy.agent
+NoDisplay=true
+DESKTOP
+    update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1
+  fi
+  fix "recreated org.omarchy.agent.desktop (Claude icon for the agent window in the dock)"
+fi
+
+claude_desktop="$HOME/.local/share/applications/Claude.desktop"
+if [[ -f $claude_desktop ]]; then
+  if grep -q '^Path=/home/vedacool/Work$' "$claude_desktop"; then
+    ok "Claude.desktop opens in ~/Work"
+  else
+    backup "$claude_desktop"
+    act sed -i '/^Path=/d; /^Exec=/a Path=/home/vedacool/Work' "$claude_desktop"
+    act update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1
+    fix "Claude.desktop working directory restored"
+  fi
+fi
+
+# WhatsApp webapp pinned to one Chrome profile (2026-10-03). Without
+# --profile-directory, `chrome --app=` opens in whichever profile was used
+# last, which shows the login QR code again whenever that profile changes.
+whatsapp_desktop="$HOME/.local/share/applications/WhatsApp.desktop"
+if [[ -f $whatsapp_desktop ]]; then
+  if grep -q '^Exec=omarchy-launch-webapp https://web.whatsapp.com/ --profile-directory=Default$' "$whatsapp_desktop"; then
+    ok "WhatsApp opens in Chrome profile Default"
+  elif grep -q '^Exec=omarchy-launch-webapp https://web.whatsapp.com/ *$' "$whatsapp_desktop"; then
+    backup "$whatsapp_desktop"
+    act sed -i 's|^Exec=omarchy-launch-webapp https://web.whatsapp.com/ *$|Exec=omarchy-launch-webapp https://web.whatsapp.com/ --profile-directory=Default|' "$whatsapp_desktop"
+    act update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1
+    fix "WhatsApp launcher pinned to Chrome profile Default again"
+  else
+    warn "WhatsApp.desktop Exec line is not the expected form; check it still has --profile-directory=Default"
+  fi
+else
+  warn "WhatsApp.desktop is gone (dock pin will break): recreate it with Exec=omarchy-launch-webapp https://web.whatsapp.com/ --profile-directory=Default"
+fi
+
+zoom_local="$HOME/.local/share/applications/Zoom.desktop"
+if [[ -f $zoom_local ]] && grep -q "omarchy-webapp-handler" "$zoom_local"; then
+  warn "the Zoom webapp launcher is back and shadows the native client: move $zoom_local away"
+else
+  ok "no Zoom webapp launcher shadowing the native client"
+fi
+
+# Report only: reinstalling is a decision, not a silent side effect of an update.
+for pkg in google-chrome zoom masterpdfeditor; do
+  if pacman -Q "$pkg" >/dev/null 2>&1; then ok "package $pkg installed"; else warn "package $pkg is no longer installed"; fi
+done
+
+# --------------------------------------------- cloned plugins vs upstream drift
+echo "Cloned shell plugins (report only, merging needs a human)"
+mkdir -p "$STATE_DIR" 2>/dev/null
+for pair in "network:panels/network:vedacool.network" "monitor:panels/monitor:vedacool.monitor" "idle:services/idle:vedacool.idle"; do
+  IFS=: read -r name upstream clone <<<"$pair"
+  dir="/usr/share/omarchy/shell/plugins/$upstream"
+  [[ -d $dir && -d $HOME/.config/omarchy/plugins/$clone ]] || { warn "plugin $clone or its upstream $upstream not found"; continue; }
+  now=$(cd "$dir" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+  stored=$(cat "$STATE_DIR/plugin-$name.sha" 2>/dev/null)
+  if [[ -z $stored ]]; then
+    ((DRY_RUN)) || echo "$now" >"$STATE_DIR/plugin-$name.sha"
+    ok "$clone: baseline of upstream omarchy.$name recorded"
+  elif [[ $stored == "$now" ]]; then
+    ok "$clone: upstream omarchy.$name unchanged"
+  else
+    ((DRY_RUN)) || echo "$now" >"$STATE_DIR/plugin-$name.sha"
+    warn "upstream omarchy.$name changed in this update: ask Claude to diff and re-sync $clone (reported once)"
+  fi
+done
+
+# ---------------------------------------------------------------------- summary
+echo "Customisation check: ${#fixed[@]} re-applied, ${#warned[@]} need attention."
+if ((${#fixed[@]} + ${#warned[@]} > 0)) && ! ((DRY_RUN)); then
+  timeout 5 omarchy-notification-send -u normal "Omarchy update: customisations" \
+    "${#fixed[@]} re-applied, ${#warned[@]} need attention. Details are in the update log." >/dev/null 2>&1
+fi
+exit 0

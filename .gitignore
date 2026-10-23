@@ -1,0 +1,6 @@
+*.bak.*
+*.bak.setup.*
+*.bak.restore.*
+*.bak.postupdate.*
+*~
+.DS_Store

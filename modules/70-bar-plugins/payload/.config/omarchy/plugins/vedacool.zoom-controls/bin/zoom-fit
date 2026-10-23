@@ -1,0 +1,48 @@
+#!/bin/bash
+# zoom-fit [fit|restore]
+#
+# fit: while Zoom's share toolbar is shown, move Zoom's other windows (the
+# minimised Meeting window, the Zoom home window) below it. Inside XWayland
+# they stay above the toolbar and take its clicks where they overlap, even
+# while minimised. Each window's place and size are saved first.
+# restore: put every saved window back (the toolbar was tucked away, the share
+# ended, or the meeting window was opened again). Run by BarWidget.qml.
+STATE="${XDG_RUNTIME_DIR:-/tmp}/zoom-controls"
+CONTROLS='^(as_toolbar|annotate_toolbar|zoom_linux_float_video_window|as_preview)$'
+mkdir -p "$STATE"
+clients=$(hyprctl clients -j)
+
+place() {  # address x y w h
+  hyprctl dispatch "hl.dsp.window.resize({ window = 'address:$1', x = $4, y = $5 })" >/dev/null
+  hyprctl dispatch "hl.dsp.window.move({ window = 'address:$1', x = $2, y = $3 })" >/dev/null
+}
+
+if [[ ${1:-fit} == restore ]]; then
+  for f in "$STATE"/0x*; do
+    [[ -f $f ]] || continue
+    addr=${f##*/}
+    if jq -e --arg a "$addr" 'any(.[]; .address == $a)' <<<"$clients" >/dev/null; then
+      read -r x y w h <"$f"
+      place "$addr" "$x" "$y" "$w" "$h"
+    fi
+    rm -f "$f"
+  done
+  exit 0
+fi
+
+tb=$(jq -c '[.[] | select(.class == "zoom" and .title == "as_toolbar")][0] // empty' <<<"$clients")
+[[ -n $tb ]] || exit 0
+mon=$(hyprctl monitors -j | jq -c --argjson id "$(jq '.monitor' <<<"$tb")" '.[] | select(.id == $id)')
+read -r mx my mw mh < <(jq -r '"\(.x) \(.y) \(.width) \(.height)"' <<<"$mon")
+read -r ty th < <(jq -r '"\(.at[1]) \(.size[1])"' <<<"$tb")
+top=$(( ty + th + 2 ))
+(( top < my )) && exit 0                      # toolbar tucked away: nothing to avoid
+jq -r --arg re "$CONTROLS" '.[] | select(.class == "zoom" and (.title | test($re) | not))
+  | "\(.address) \(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])"' <<<"$clients" |
+while read -r addr x y w h; do
+  (( y >= top )) && continue
+  [[ -f $STATE/$addr ]] || echo "$x $y $w $h" >"$STATE/$addr"
+  nw=$(( w < mw ? w : mw )); nh=$(( h < my + mh - top ? h : my + mh - top ))
+  nx=$(( x < mx ? mx : x )); (( nx + nw > mx + mw )) && nx=$(( mx + mw - nw ))
+  place "$addr" "$nx" "$top" "$nw" "$nh"
+done
