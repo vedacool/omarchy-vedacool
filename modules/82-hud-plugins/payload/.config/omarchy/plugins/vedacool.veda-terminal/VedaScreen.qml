@@ -42,6 +42,15 @@ Item {
   // only, and a display-link block takes the news panel's place.
   readonly property var logView: hud.calm ? hud.logLines.filter(function(l) { return !l.archive }) : hud.logLines
 
+  // Compact bytes/sec -> "6.1M" / "512K" / "3.4K" / "0" for the NET MONITOR.
+  function fmtRate(bps) {
+    var kb = bps / 1024
+    if (kb >= 1024) return (kb / 1024).toFixed(1) + "M"
+    if (kb >= 100) return Math.round(kb) + "K"
+    if (kb >= 1) return kb.toFixed(1) + "K"
+    return "0"
+  }
+
   // The core sits a little above the gauge centre, inside its U.
   readonly property real ccx: cx
   readonly property real ccy: cy - rad * 0.12
@@ -846,7 +855,7 @@ Item {
       Text {
         id: logTitle
         anchors.centerIn: parent
-        text: "VEDA://TERMINAL  LOG"
+        text: "VEDA://NET  MONITOR"
         font.family: "Michroma"; font.pixelSize: hs.labelPx; font.letterSpacing: 1 * hs.u
         color: hs.panel
       }
@@ -860,37 +869,75 @@ Item {
       border.width: 1
       clip: true
 
-      // Newest at the bottom, just above the prompt; older lines scroll off the top.
+      // --- total throughput header ---
+      Text {
+        id: totalLabel
+        anchors.top: parent.top; anchors.left: parent.left
+        anchors.topMargin: 5 * hs.u; anchors.leftMargin: 7 * hs.u
+        text: "TOTAL"
+        font.family: "Michroma"; font.pixelSize: hs.labelPx; font.letterSpacing: 1 * hs.u
+        color: Qt.alpha(hs.sig, 0.7)
+      }
+      Text {
+        anchors.top: parent.top; anchors.right: parent.right
+        anchors.topMargin: 4 * hs.u; anchors.rightMargin: 7 * hs.u
+        text: "↓ " + hs.fmtRate(hs.hud.netDl) + "   ↑ " + hs.fmtRate(hs.hud.netUl)
+        font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 9 * hs.u
+        color: hs.textBright
+      }
+
+      // --- per-process rows (busiest first) ---
       Column {
-        x: 6 * hs.u
-        width: parent.width - 12 * hs.u
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 20 * hs.u
+        id: hogCol
+        x: 7 * hs.u
+        y: 22 * hs.u
+        width: parent.width - 14 * hs.u
         spacing: 3 * hs.u
         Repeater {
-          model: hs.logView
-          Row {
-            id: logRow
+          model: hs.hud.netHogs
+          Item {
+            id: hogRow
             required property var modelData
             required property int index
-            readonly property bool newest: index === hs.logView.length - 1
-            spacing: 5 * hs.u
+            width: hogCol.width
+            height: 12 * hs.u
             Text {
-              text: logRow.modelData.stamp
+              id: hogRate
+              anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+              text: "↓ " + hs.fmtRate(hogRow.modelData.dl) + "   ↑ " + hs.fmtRate(hogRow.modelData.ul)
               font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 9 * hs.u
-              color: Qt.alpha(hs.sig, 0.7)   // 0.5 was 3.7:1; timestamps are what you scan by
+              color: Qt.alpha(hs.sig, 0.85)
             }
             Text {
-              width: logBox.width - 48 * hs.u
-              text: logRow.newest ? logRow.modelData.text.slice(0, logPanel.typed) : logRow.modelData.text
-              wrapMode: Text.WordWrap
-              maximumLineCount: 2
+              anchors.left: parent.left; anchors.right: hogRate.left; anchors.rightMargin: 6 * hs.u
+              anchors.verticalCenter: parent.verticalCenter
+              text: "> " + hogRow.modelData.name
               elide: Text.ElideRight
               font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 9 * hs.u
-              color: logRow.newest ? hs.textBright : Qt.alpha(hs.sig, 0.75)
+              color: hogRow.index === 0 ? hs.sigBright : hs.textBright
             }
           }
         }
+      }
+
+      // --- idle state ---
+      Text {
+        anchors.centerIn: parent
+        visible: hs.hud.netHogs.length === 0
+        text: "NO ACTIVE TRANSFERS"
+        font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 9 * hs.u
+        color: Qt.alpha(hs.sig, 0.5)
+      }
+
+      // --- footer: count + hidden overflow ---
+      Text {
+        anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: 20 * hs.u
+        visible: hs.hud.netHogs.length > 0
+        text: hs.hud.netActive + " ACTIVE"
+          + (hs.hud.netActive > hs.hud.netHogs.length ? "  ·  " + (hs.hud.netActive - hs.hud.netHogs.length) + " MORE" : "")
+        font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 8 * hs.u
+        color: Qt.alpha(hs.sig, 0.45)
       }
     }
   }

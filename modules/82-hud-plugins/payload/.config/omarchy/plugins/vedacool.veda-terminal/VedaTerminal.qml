@@ -448,6 +448,51 @@ Item {
     onTriggered: if (!sampler.running) sampler.running = true
   }
 
+  // ----------------------------------------------------------- net monitor
+  // Per-process bandwidth (down + up), sampled without root by diffing ss
+  // socket counters. Covers your own apps (~all of a laptop's traffic);
+  // root/system transfers group as "system". Feeds the NET MONITOR panel.
+  readonly property string netScript: home + "/.config/omarchy/plugins/vedacool.veda-terminal/net-hogs.sh"
+  property var netHogs: []      // [{ name, dl, ul }] bytes/sec, busiest first
+  property real netDl: 0        // total bytes/sec down
+  property real netUl: 0        // total bytes/sec up
+  property int netActive: 0     // processes above the noise threshold
+
+  function ingestNet(raw) {
+    var lines = String(raw || "").split("\n")
+    var hogs = []
+    for (var i = 0; i < lines.length; i++) {
+      var f = lines[i].trim().split(/\s+/)
+      if (f[0] === "TOTAL") {
+        netDl = parseFloat(f[1]) || 0
+        netUl = parseFloat(f[2]) || 0
+        netActive = parseInt(f[3]) || 0
+      } else if (f.length >= 3 && f[0] && f[0].indexOf("#") !== 0) {
+        hogs.push({ name: f[0].replace(/_/g, " "), dl: parseFloat(f[1]) || 0, ul: parseFloat(f[2]) || 0 })
+      }
+    }
+    netHogs = hogs
+  }
+
+  Process {
+    id: netSampler
+    command: ["bash", root.netScript]
+    stdout: StdioCollector { onStreamFinished: root.ingestNet(text) }
+  }
+
+  // The helper sleeps ~1.2s internally (two snapshots), so fire it less often
+  // than the stats sampler. Off on battery-saver cadence; idle when hidden.
+  Timer {
+    interval: root.unplugged ? 8000 : 4000
+    running: root.running
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: if (!netSampler.running) netSampler.running = true
+  }
+
+  // Clear stale rows when the HUD stops so it doesn't resume on old numbers.
+  onRunningChanged: if (!running) { netHogs = []; netDl = 0; netUl = 0; netActive = 0 }
+
   Timer {
     interval: root.unplugged || root.calm ? 300 : 100
     running: root.running
