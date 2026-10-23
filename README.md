@@ -19,6 +19,17 @@ a sci-tech news feed, per-thread load bars, and a terminal log:
 
 ![VEDA HUD](docs/veda-hud.png)
 
+**Boot screen** (Plymouth) and **screensaver** — same VEDA language end to end:
+
+| Boot screen | Screensaver |
+|:---:|:---:|
+| ![VEDA boot screen](docs/boot-veda.png) | ![VEDA screensaver](docs/screensaver.png) |
+
+**Projection mode** — when an external display/projector is attached, the HUD
+strips down to a clean, legible overlay for the big screen:
+
+![Projection mode](docs/projection.png)
+
 Three selectable themes:
 
 | VEDA Terminal | GN-00 Raiser (Exia) | Gundam 00 |
