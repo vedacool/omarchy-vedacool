@@ -30,6 +30,12 @@ strips down to a clean, legible overlay for the big screen:
 
 ![Projection mode](docs/projection.png)
 
+**WiFi panel** (`vedacool.network`) — a reworked network panel with live ping /
+packet-loss / throughput, a DNS-provider switcher, and inline connect + QR
+(network names and IP blurred here for privacy):
+
+![WiFi panel](docs/wifi-panel.png)
+
 Three selectable themes:
 
 | VEDA Terminal | GN-00 Raiser (Exia) | Gundam 00 |
