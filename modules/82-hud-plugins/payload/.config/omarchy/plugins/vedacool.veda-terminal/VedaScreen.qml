@@ -729,8 +729,30 @@ Item {
   Item {
     x: hs.projection ? hs.cx - width / 2 : 16 * hs.u
     y: (hs.projection ? 40 : 64) * hs.u
-    width: 300 * hs.u
+    // Sized once for the widest time and weekday (Orbitron digits are not
+    // monospaced), so a two-digit hour and WEDNESDAY never collide and the
+    // pill holds still as the seconds tick.
+    width: Math.max(300 * hs.u, 42 * hs.u + reserveW + 16 * hs.u + 22 * hs.u)
     height: 84 * hs.u
+
+    property real reserveW: 0
+    TextMetrics { id: tmBig; font: clockBig.font }
+    TextMetrics { id: tmSmall; font: clockSecs.font }
+    TextMetrics { id: tmDay; font: clockDay.font }
+    function measureReserve() {
+      var big = 0, small = 0, day = 0
+      for (var d = 0; d < 10; d++) {
+        tmBig.text = hs.slash("1" + d + ":" + d + d); big = Math.max(big, tmBig.advanceWidth)
+        tmSmall.text = "." + hs.slash("" + d + d) + " AM"; small = Math.max(small, tmSmall.advanceWidth)
+        tmSmall.text = "." + hs.slash("" + d + d) + " PM"; small = Math.max(small, tmSmall.advanceWidth)
+      }
+      for (var i = 0; i < 7; i++) {
+        tmDay.text = Qt.formatDate(new Date(2026, 9, 18 + i), "dddd").toUpperCase()
+        day = Math.max(day, tmDay.advanceWidth)
+      }
+      reserveW = Math.ceil(big + clockRow.spacing + small + day)
+    }
+    Component.onCompleted: measureReserve()
 
     Rectangle {
       x: hs.projection ? (parent.width - width) / 2 : 0
@@ -764,6 +786,7 @@ Item {
         }
       }
       Row {
+        id: clockRow
         anchors.verticalCenter: parent.verticalCenter
         x: 42 * hs.u
         spacing: 3 * hs.u
@@ -774,6 +797,7 @@ Item {
           color: hs.textBright
         }
         Text {
+          id: clockSecs
           anchors.baseline: clockBig.baseline
           text: "." + hs.slash(Qt.formatTime(clock.date, "ss")) + " " + Qt.formatTime(clock.date, "h AP").split(" ")[1]
           font.family: "Orbitron"; font.weight: Font.Bold; font.pixelSize: 16 * hs.u
@@ -792,6 +816,7 @@ Item {
           color: hs.sig
         }
         Text {
+          id: clockDay
           anchors.right: parent.right
           text: Qt.formatDate(clock.date, "dddd").toUpperCase()
           font.family: "Michroma"; font.pixelSize: hs.labelPx; font.letterSpacing: 1 * hs.u
