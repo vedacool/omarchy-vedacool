@@ -12,6 +12,19 @@ Every module is **idempotent**, **backs up anything it touches** before editing,
 is gated behind a **dependency + compatibility preflight**. Nothing is changed unless
 the preflight passes and you confirm.
 
+## Screenshots
+
+The **VEDA HUD** — an animated desktop overlay with live CPU / temp / fan / battery,
+a sci-tech news feed, per-thread load bars, and a terminal log:
+
+![VEDA HUD](docs/veda-hud.png)
+
+Three selectable themes:
+
+| VEDA Terminal | GN-00 Raiser (Exia) | Gundam 00 |
+|:---:|:---:|:---:|
+| ![VEDA Terminal](modules/80-themes/payload/.config/omarchy/themes/veda-terminal/preview.png) | ![GN-00 Raiser](modules/80-themes/payload/.config/omarchy/themes/gundam-00-raiser/preview.png) | ![Gundam 00](modules/80-themes/payload/.config/omarchy/themes/gundam-00/preview.png) |
+
 ## Install in one line
 
 The installer pulls this repo and runs the picker — no manual clone needed:
