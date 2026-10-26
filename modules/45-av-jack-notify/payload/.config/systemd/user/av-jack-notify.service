@@ -1,0 +1,11 @@
+[Unit]
+Description=Toast on headphone (3.5mm) and HDMI plug/unplug
+After=pipewire.service wireplumber.service
+
+[Service]
+ExecStart=%h/.local/bin/av-jack-notify
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

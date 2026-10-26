@@ -93,6 +93,7 @@ preflight tells you if your selection is missing one).
 | `20-hypr-desktop` | Windows-like Hyprland: float-by-default, edge-snap, border resize, SUPER+M/N, auto-hide dock, scale 1/1 | | weak/old GPU |
 | `30-chrome-flags` | Chrome: software GPU, Wayland IME, 80% UI | | old GPU / small screen |
 | `40-dock-pins` | Dock pins: Chrome, Zoom, WhatsApp | | |
+| `45-av-jack-notify` | Toast on 3.5mm headphone + HDMI plug/unplug | | |
 | `50-desktop-entries` | Claude opens in `~/Work`, WhatsApp pinned to one Chrome profile, agent-window icon | | |
 | `60-shell-bar` | Opaque bar, custom bar layout, 12pt font | | needs `70` |
 | `70-bar-plugins` | Top-bar pills: netspeed, network, monitor, zoom-controls | | |
