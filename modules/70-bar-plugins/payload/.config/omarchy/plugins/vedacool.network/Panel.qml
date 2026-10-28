@@ -325,6 +325,22 @@ Panel {
       scannerDevice.scannerEnabled = enabled
   }
 
+  // Fixed-interval live rescan while the panel is open. The backend exposes only
+  // scannerEnabled (no explicit scan()), and leaving it merely true lets
+  // NetworkManager back the cadence off once associated -- so force a fresh
+  // sweep by toggling it off then on, the same idiom the open-scan uses. Done
+  // without touching `scanning`, so the list re-sorts silently as results land
+  // rather than flashing the spinner every tick. 5s is the floor worth using:
+  // an active scan briefly pulls this single-radio card off its channel, and NM
+  // rate-limits explicit rescans below a few seconds anyway.
+  readonly property int wifiScanIntervalMs: 5000
+
+  function pulseScan() {
+    if (!opened || !wifiDevice || !Networking.wifiEnabled) return
+    setScannerEnabled(false)
+    scanPulseReenable.restart()
+  }
+
   Component.onDestruction: {
     if (scannerDevice) scannerDevice.scannerEnabled = false
   }
@@ -886,6 +902,25 @@ Panel {
     interval: 1500
     repeat: false
     onTriggered: root.syncWifiNetworks()
+  }
+
+  // Re-enable leg of pulseScan(): a short gap after disabling is enough for the
+  // backend to register the toggle and issue a fresh scan request.
+  Timer {
+    id: scanPulseReenable
+    interval: 100
+    repeat: false
+    onTriggered: if (root.opened) root.setScannerEnabled(true)
+  }
+
+  // The constant-interval driver: forces a fresh sweep every wifiScanIntervalMs
+  // for as long as the panel is open, then stops (scanner released on close).
+  Timer {
+    id: wifiScanPulse
+    interval: root.wifiScanIntervalMs
+    repeat: true
+    running: root.opened && !!root.wifiDevice && Networking.wifiEnabled
+    onTriggered: root.pulseScan()
   }
 
   Process {
