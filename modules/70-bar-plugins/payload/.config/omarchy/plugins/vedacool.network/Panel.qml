@@ -83,11 +83,13 @@ Panel {
   // service, so it only updates while the panel is open and lags a reconnect
   // by a poll. Empty until the first lookup returns (or if we're offline).
   property string publicIp: ""
-  // Split the resolver list into primary/secondary for their own rows. A third
-  // resolver (rare) folds into DNS 2 so it isn't silently dropped.
+  // Split the resolver list into primary/secondary for their own rows. Strictly
+  // one address each -- a rare 3rd resolver is left off rather than crammed onto
+  // DNS 2 (which read as a "weird" trailing address). Link-local IPv6 (fe80::),
+  // which a router often advertises as a DNS, is filtered out at the source.
   readonly property var dnsList: root.dnsServers ? root.dnsServers.split(" ").filter(function(s) { return s !== "" }) : []
   readonly property string dns1: dnsList.length > 0 ? dnsList[0] : ""
-  readonly property string dns2: dnsList.length > 1 ? dnsList.slice(1).join(" ") : ""
+  readonly property string dns2: dnsList.length > 1 ? dnsList[1] : ""
   // Wi-Fi band state from `omarchy-network-band`. `bandCurrent` is the band
   // the radio is actually on; `bandSelected` is the pinned choice ("auto" when
   // nothing is pinned), and the two differ whenever Auto is in effect.
@@ -699,7 +701,7 @@ Panel {
   function dnsServersCommand() {
     return "dev=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i==\"dev\"){print $(i+1);exit}}');" +
       " [ -n \"$dev\" ] && nmcli -t -f IP4.DNS,IP6.DNS device show \"$dev\" 2>/dev/null" +
-      " | sed 's/^[^:]*://' | awk 'NF && !seen[$0]++' | paste -sd' ' -"
+      " | sed 's/^[^:]*://' | awk 'NF && $0 !~ /^fe80:/ && !seen[$0]++' | paste -sd' ' -"
   }
 
   function updatePublicIp(raw) {
