@@ -75,7 +75,10 @@ handle() {
     closewindow\>\>*)
       # Forget the saved pre-maximise size (window-maximise-toggle);
       # Hyprland reuses addresses, so a stale file could confuse a new window.
-      rm -f "${XDG_RUNTIME_DIR:-/tmp}/window-maximise/0x${1#closewindow>>}"
+      # The address is a hex pointer; only act on that shape so a malformed
+      # event line can never steer the rm at another path.
+      local addr=${1#closewindow>>}
+      [[ $addr =~ ^[0-9a-fA-F]+$ ]] && rm -f "${XDG_RUNTIME_DIR:-/tmp}/window-maximise/0x$addr"
       ;;
   esac
 }

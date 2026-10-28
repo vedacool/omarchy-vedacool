@@ -73,6 +73,28 @@ curl -fsSL https://raw.githubusercontent.com/vedacool/omarchy-vedacool/main/inst
 
 The installer clones to `~/omarchy-vedacool`, then hands off to `setup.sh`.
 
+### Pin a version / verify before running
+
+`curl | bash` runs whatever `main` points at right now. If you'd rather run a
+reviewed, fixed version, **pin a tag or commit** — the installer clones that
+exact ref and prints the commit SHA it's about to run:
+
+```bash
+# install a specific tag (reproducible)
+OMARCHY_VEDACOOL_REF=v1.0.0 bash <(curl -fsSL https://raw.githubusercontent.com/vedacool/omarchy-vedacool/main/install.sh)
+```
+
+Most cautious: **read it first.** Nothing is applied until the preflight passes
+and you confirm (`setup.sh` won't change anything without `--yes` or an
+interactive *y*), so you can clone, read the modules you want, and run it by hand:
+
+```bash
+git clone https://github.com/vedacool/omarchy-vedacool.git ~/omarchy-vedacool
+cd ~/omarchy-vedacool && git checkout v1.0.0   # optional: pin a tag
+less modules/20-hypr-desktop/module.sh         # read what a module does
+DRY_RUN=1 ./setup.sh --all                     # preview every change, touch nothing
+```
+
 ## Or clone and drive it yourself
 
 ```bash

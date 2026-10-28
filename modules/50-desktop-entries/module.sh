@@ -16,7 +16,11 @@ apply() {
   [[ -f $claude ]] || { [[ -f $PAYLOAD/.local/share/applications/Claude.desktop ]] && copy_payload ".local/share/applications/Claude.desktop"; }
   if [[ -f $claude ]]; then
     if grep -qxF "Path=$workdir" "$claude"; then ok "Claude.desktop opens in ~/Work"
-    else backup "$claude"; act sed -i "/^Path=/d; /^Exec=/a Path=$workdir" "$claude"; fix "Claude.desktop working directory set to $workdir"; fi
+    else
+      # Escape backslashes so an odd $HOME can't alter the sed append command.
+      local workdir_sed=${workdir//\\/\\\\}
+      backup "$claude"; act sed -i "/^Path=/d; /^Exec=/a Path=$workdir_sed" "$claude"; fix "Claude.desktop working directory set to $workdir"
+    fi
   fi
 
   # WhatsApp webapp -> fixed Chrome profile + window-class icon.

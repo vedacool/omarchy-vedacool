@@ -19,6 +19,9 @@ set -euo pipefail
 
 REPO="${OMARCHY_VEDACOOL_REPO:-vedacool/omarchy-vedacool}"
 BRANCH="${OMARCHY_VEDACOOL_BRANCH:-main}"
+# Pin to a tag or commit for a reproducible, reviewable install, e.g.
+#   OMARCHY_VEDACOOL_REF=v1.0.0 bash <(curl -fsSL .../install.sh)
+REF="${OMARCHY_VEDACOOL_REF:-}"
 DEST="${OMARCHY_VEDACOOL_DIR:-$HOME/omarchy-vedacool}"
 
 say() { printf '\033[1m[omarchy-vedacool]\033[0m %s\n' "$*"; }
@@ -27,7 +30,19 @@ command -v git >/dev/null || { echo "git is required (install it first: sudo pac
 
 if [[ -d $DEST/.git ]]; then
   say "Updating existing checkout at $DEST"
-  git -C "$DEST" pull --ff-only || say "could not fast-forward; using the checkout as-is"
+  git -C "$DEST" fetch --tags --quiet origin "${REF:-$BRANCH}" 2>/dev/null || true
+  if [[ -n $REF ]]; then
+    git -C "$DEST" checkout --quiet --detach "$REF" 2>/dev/null \
+      || git -C "$DEST" checkout --quiet --detach FETCH_HEAD 2>/dev/null \
+      || say "could not check out ref '$REF'; using the checkout as-is"
+  else
+    git -C "$DEST" pull --ff-only || say "could not fast-forward; using the checkout as-is"
+  fi
+elif [[ -n $REF ]]; then
+  # A pinned ref needs full history so a tag OR an arbitrary commit resolves.
+  say "Cloning $REPO @ $REF -> $DEST"
+  git clone --quiet "https://github.com/$REPO.git" "$DEST"
+  git -C "$DEST" checkout --quiet --detach "$REF" || { say "ref '$REF' not found"; exit 1; }
 else
   say "Cloning $REPO -> $DEST"
   git clone --depth 1 -b "$BRANCH" "https://github.com/$REPO.git" "$DEST"
@@ -35,6 +50,11 @@ fi
 
 cd "$DEST"
 chmod +x setup.sh lib/*.sh 2>/dev/null || true
+
+# Name the exact commit about to run. A curl|bash installer should say what it
+# resolved so you can check it against the repo; setup.sh still won't change
+# anything without --yes or an interactive confirm.
+say "Running $(git rev-parse --short HEAD 2>/dev/null) — $(git log -1 --format='%s' 2>/dev/null)"
 
 if (($#)); then
   exec ./setup.sh "$@"
