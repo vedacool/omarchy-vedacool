@@ -337,9 +337,22 @@ Panel {
   // safe rate, so a 5s ask can't thrash this single-radio card.
   readonly property int wifiScanIntervalMs: 5000
 
+  // Scanner status shown in the Wi-Fi section header. We own the scan schedule,
+  // so we track these ourselves -- the backend reports no scan-in-progress. A
+  // sweep has no completion signal, so `scanInProgress` is held up for a short
+  // fixed, readable window rather than cleared on a result that can't be told
+  // apart from a routine signal update.
+  property bool scanInProgress: false
+  property int scanCountdown: 0   // seconds until the next sweep
+  readonly property string scanStatusText: (scanning || scanInProgress)
+    ? "SCANNING WI-FI…"
+    : (scanCountdown > 0 ? "NEXT SCAN IN " + scanCountdown + "S" : "WAITING…")
+
   function pulseScan() {
     if (!opened || !wifiDevice || !Networking.wifiEnabled || rescanProc.running) return
+    scanInProgress = true
     rescanProc.running = true
+    scanBusyTimer.restart()
   }
 
   Component.onDestruction: {
@@ -351,6 +364,7 @@ Panel {
   onOpenedChanged: {
     if (opened) {
       refresh(true)
+      scanCountdown = Math.round(wifiScanIntervalMs / 1000)
       selectedIndex = wifiNetworks.length > 0 ? 0 : -1
       wifiActionFocused = false
       focusSection = wifiNetworks.length > 0 ? "wifi" : "dns"
@@ -374,6 +388,8 @@ Panel {
       routerPingLatency = -1
       internetPingLatency = -1
       internetPingPacketLoss = 0
+      scanInProgress = false
+      scanCountdown = 0
       setScannerEnabled(false)
     }
   }
@@ -913,14 +929,30 @@ Panel {
     command: ["nmcli", "device", "wifi", "rescan"]
   }
 
-  // The constant-interval driver: asks for a fresh sweep every wifiScanIntervalMs
-  // for as long as the panel is open, then stops (scanner released on close).
+  // Holds the "SCANNING…" label up for a readable beat after a sweep is asked
+  // for -- there is no scan-complete signal to end it on.
   Timer {
-    id: wifiScanPulse
-    interval: root.wifiScanIntervalMs
+    id: scanBusyTimer
+    interval: 1500
+    repeat: false
+    onTriggered: root.scanInProgress = false
+  }
+
+  // 1s heartbeat while the panel is open: counts down to the next sweep and
+  // fires it at zero. Doubles as the source of the countdown shown in the header.
+  Timer {
+    id: scanTick
+    interval: 1000
     repeat: true
     running: root.opened && !!root.wifiDevice && Networking.wifiEnabled
-    onTriggered: root.pulseScan()
+    onTriggered: {
+      if (root.scanCountdown > 0) {
+        root.scanCountdown -= 1
+        return
+      }
+      root.pulseScan()
+      root.scanCountdown = Math.round(root.wifiScanIntervalMs / 1000)
+    }
   }
 
   Process {
@@ -1616,8 +1648,8 @@ Panel {
       }
 
       PanelSectionHeader {
-        visible: root.wifiStationAvailable && root.scanning
-        text: "SCANNING WI-FI…"
+        visible: root.wifiStationAvailable
+        text: root.scanStatusText
         foreground: root.bar.foreground
         fontFamily: root.bar.fontFamily
       }
