@@ -114,10 +114,20 @@ def read_capped(resp):
         chunks.append(chunk)
 
 
+def safe_fromstring(data):
+    """Parse feed XML without DTDs/entities. A real RSS/Atom feed needs neither;
+    a <!DOCTYPE>/<!ENTITY> is how XXE and billion-laughs entity-expansion DoS get
+    in, so refuse them outright — cheaper than a defusedxml dependency, and a
+    compromised/MITM'd feed can't make the parser blow up memory/CPU."""
+    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+        raise ValueError("feed declares a DTD/entity; refused")
+    return ET.fromstring(data)
+
+
 def fetch(category, source, url):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (gn-hud news panel)"})
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        root = ET.fromstring(read_capped(resp))
+        root = safe_fromstring(read_capped(resp))
 
     items = []
     for node in root.iter():

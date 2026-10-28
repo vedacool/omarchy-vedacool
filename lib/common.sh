@@ -37,6 +37,11 @@ copy_payload() {
   if ((DRY_RUN)); then echo "  [dry-run] copy $rel -> $dest"; return 0; fi
   mkdir -p "$(dirname "$dest")"
   if [[ -d $src ]]; then
+    # Back up an existing destination directory before overwriting it, so a
+    # user's own edits to a plugin/theme dir aren't lost unrecoverably. (The
+    # copy merges, so files not in the payload survive; the backup captures the
+    # pre-state regardless.)
+    [[ -e $dest && ! -L $dest ]] && cp -a "$dest" "$dest.bak.setup.$TS"
     mkdir -p "$dest"; cp -a "$src/." "$dest/"
   else
     [[ -f $dest ]] && cp -p "$dest" "$dest.bak.setup.$TS"
@@ -102,13 +107,15 @@ ensure_sysfile() {
   rm -f "$tmp"
 }
 
-# jq_set FILE FILTER DESC — apply a jq filter to a JSON file, validate, swap in.
+# jq_set FILE FILTER DESC [jq-args...] — apply a jq filter to a JSON file,
+# validate, swap in. Extra args after DESC are passed to jq (e.g. --arg id X),
+# so callers pass values as jq variables instead of interpolating into FILTER.
 jq_set() {
-  local file=$1 filter=$2 desc=$3 tmp
+  local file=$1 filter=$2 desc=$3 tmp; shift 3
   if [[ ! -f $file ]] || ! jq empty "$file" >/dev/null 2>&1; then warn "$desc: $file missing or invalid JSON"; return; fi
   if ((DRY_RUN)); then echo "  [dry-run] jq '$filter' on ${file/#$HOME/\~}"; fix "$desc (dry-run)"; return; fi
   backup "$file"; tmp=$(mktemp)
-  if jq "$filter" "$file" >"$tmp" && jq empty "$tmp" >/dev/null 2>&1; then cat "$tmp" >"$file"; fix "$desc"; else warn "$desc: jq edit failed, left alone"; fi
+  if jq "$@" "$filter" "$file" >"$tmp" && jq empty "$tmp" >/dev/null 2>&1; then cat "$tmp" >"$file"; fix "$desc"; else warn "$desc: jq edit failed, left alone"; fi
   rm -f "$tmp"
 }
 
@@ -119,5 +126,5 @@ register_plugin() {
   if [[ -f $sj ]] && jq -e --arg id "$id" '(.plugins // []) | any(type=="object" and .id==$id)' "$sj" >/dev/null 2>&1; then
     ok "plugin enabled: $id"; return
   fi
-  jq_set "$sj" '.plugins = ([(.plugins // [])[] | select(. != "'"$id"'")] + [{"id": "'"$id"'"}])' "plugin enabled: $id"
+  jq_set "$sj" '.plugins = ([(.plugins // [])[] | select(. != $id)] + [{"id": $id}])' "plugin enabled: $id" --arg id "$id"
 }

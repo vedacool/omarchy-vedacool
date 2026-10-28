@@ -46,8 +46,9 @@ for d in "$MODDIR"/*/; do
   [[ -n $out ]] && echo "$out"
 done
 
-# drop any stray backups swept in from the live tree
+# drop any stray backups + audit memory swept in from the live tree
 find "$MODDIR" -name '*.bak.*' -delete 2>/dev/null
+find "$MODDIR" -type d \( -name '.audit' -o -name '__pycache__' \) -exec rm -rf {} + 2>/dev/null
 
 echo
 echo "Changes vs committed:"
