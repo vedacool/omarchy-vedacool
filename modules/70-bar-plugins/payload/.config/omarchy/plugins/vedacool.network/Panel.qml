@@ -325,20 +325,21 @@ Panel {
       scannerDevice.scannerEnabled = enabled
   }
 
-  // Fixed-interval live rescan while the panel is open. The backend exposes only
-  // scannerEnabled (no explicit scan()), and leaving it merely true lets
-  // NetworkManager back the cadence off once associated -- so force a fresh
-  // sweep by toggling it off then on, the same idiom the open-scan uses. Done
-  // without touching `scanning`, so the list re-sorts silently as results land
-  // rather than flashing the spinner every tick. 5s is the floor worth using:
-  // an active scan briefly pulls this single-radio card off its channel, and NM
-  // rate-limits explicit rescans below a few seconds anyway.
+  // Fixed-interval live rescan while the panel is open. The scanner is already
+  // held on the whole time the panel is open; this just asks NetworkManager for
+  // a fresh sweep more often than its associated-backoff cadence would give.
+  //
+  // It must NOT toggle scannerEnabled off to do this: disabling it empties
+  // networks.values for a frame, which blanked the list (blink) and dropped the
+  // hovered row out from under the cursor mid-click. `nmcli ... rescan` updates
+  // the access points in place, so the list only ever re-sorts -- no clear, no
+  // blink, rows stay clickable. NM coalesces rapid requests and scans at its own
+  // safe rate, so a 5s ask can't thrash this single-radio card.
   readonly property int wifiScanIntervalMs: 5000
 
   function pulseScan() {
-    if (!opened || !wifiDevice || !Networking.wifiEnabled) return
-    setScannerEnabled(false)
-    scanPulseReenable.restart()
+    if (!opened || !wifiDevice || !Networking.wifiEnabled || rescanProc.running) return
+    rescanProc.running = true
   }
 
   Component.onDestruction: {
@@ -904,16 +905,15 @@ Panel {
     onTriggered: root.syncWifiNetworks()
   }
 
-  // Re-enable leg of pulseScan(): a short gap after disabling is enough for the
-  // backend to register the toggle and issue a fresh scan request.
-  Timer {
-    id: scanPulseReenable
-    interval: 100
-    repeat: false
-    onTriggered: if (root.opened) root.setScannerEnabled(true)
+  // Asks NM for a fresh sweep. Async: nmcli returns immediately and the updated
+  // APs arrive over D-Bus, re-sorting the list in place. Errors (e.g. a rescan
+  // NM declines because one is already in flight) are harmless and ignored.
+  Process {
+    id: rescanProc
+    command: ["nmcli", "device", "wifi", "rescan"]
   }
 
-  // The constant-interval driver: forces a fresh sweep every wifiScanIntervalMs
+  // The constant-interval driver: asks for a fresh sweep every wifiScanIntervalMs
   // for as long as the panel is open, then stops (scanner released on close).
   Timer {
     id: wifiScanPulse
