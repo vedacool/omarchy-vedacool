@@ -1,5 +1,12 @@
 # omarchy-vedacool
 
+> A Gundam 00 / VEDA themed [Omarchy](https://omarchy.org) (Hyprland) desktop — modular, preflight-gated, install one piece at a time.
+
+![platform: Omarchy / Hyprland](https://img.shields.io/badge/platform-Omarchy%20%2F%20Hyprland-5cd6ff)
+![shell: Bash](https://img.shields.io/badge/shell-Bash-1f8f4e)
+![license: MIT](https://img.shields.io/badge/license-MIT-f2c14e)
+![install: one-line](https://img.shields.io/badge/install-one--line-ff4fe6)
+
 A modular set of [Omarchy](https://omarchy.org) customisations you can **install one at a time**.
 
 This is my personal Omarchy setup — a Gundam 00 / VEDA themed desktop, a few
