@@ -344,9 +344,21 @@ Panel {
   // apart from a routine signal update.
   property bool scanInProgress: false
   property int scanCountdown: 0   // seconds until the next sweep
-  readonly property string scanStatusText: (scanning || scanInProgress)
+  readonly property bool scanActive: scanning || scanInProgress
+  readonly property string scanStatusText: scanActive
     ? "SCANNING WI-FI…"
     : (scanCountdown > 0 ? "NEXT SCAN IN " + scanCountdown + "S" : "WAITING…")
+  // Is an "OTHER NETWORKS" header rendered (any unsaved network in the list)?
+  // When it is, the scan status rides on that line; otherwise it falls back to
+  // its own standalone line above the list.
+  readonly property bool hasOtherNetworks: {
+    for (var i = 0; i < wifiNetworks.length; i++)
+      if (wifiNetworks[i] && !wifiNetworks[i].known) return true
+    return false
+  }
+  // Braille spinner, cycled by spinnerTimer while a sweep is in flight.
+  property int spinnerFrame: 0
+  readonly property var spinnerFrames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
   function pulseScan() {
     if (!opened || !wifiDevice || !Networking.wifiEnabled || rescanProc.running) return
@@ -953,6 +965,15 @@ Panel {
       root.pulseScan()
       root.scanCountdown = Math.round(root.wifiScanIntervalMs / 1000)
     }
+  }
+
+  // Advances the braille spinner only while a sweep is actually in flight.
+  Timer {
+    id: spinnerTimer
+    interval: 90
+    repeat: true
+    running: root.opened && root.scanActive
+    onTriggered: root.spinnerFrame = (root.spinnerFrame + 1) % root.spinnerFrames.length
   }
 
   Process {
@@ -1647,11 +1668,10 @@ Panel {
         foreground: root.bar.foreground
       }
 
-      PanelSectionHeader {
-        visible: root.wifiStationAvailable
-        text: root.scanStatusText
-        foreground: root.bar.foreground
-        fontFamily: root.bar.fontFamily
+      // Standalone fallback: only shown when there is no "OTHER NETWORKS"
+      // header for the status to ride on (all saved, or the list still empty).
+      ScanStatus {
+        visible: root.wifiStationAvailable && !root.hasOtherNetworks
       }
 
       // Scrollable network list — cap the height so a busy neighbourhood
@@ -1690,12 +1710,27 @@ Panel {
             width: parent.width
             spacing: Style.space(4)
 
-            PanelSectionHeader {
+            // Section label on the left; on the "OTHER NETWORKS" line the live
+            // scan status + spinner ride along on the right.
+            Item {
+              width: parent.width
               visible: sectionTitle !== ""
-              text: sectionTitle
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              height: visible ? implicitHeight : 0
+              height: visible ? sectionHeader.implicitHeight : 0
+
+              PanelSectionHeader {
+                id: sectionHeader
+                text: sectionTitle
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              ScanStatus {
+                visible: sectionTitle === "OTHER NETWORKS"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+              }
             }
 
             NetworkRow {
@@ -2175,6 +2210,29 @@ Panel {
     }
   }
 
+
+  // Scan status cluster: a braille spinner (only while a sweep is in flight)
+  // followed by the status / countdown text. Reused on the "OTHER NETWORKS"
+  // header line and as the standalone fallback.
+  component ScanStatus: Row {
+    spacing: Style.space(6)
+
+    Text {
+      visible: root.scanActive
+      text: root.spinnerFrames[root.spinnerFrame]
+      color: root.bar.foreground
+      font.family: root.bar.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    PanelSectionHeader {
+      text: root.scanStatusText
+      foreground: root.bar.foreground
+      fontFamily: root.bar.fontFamily
+      anchors.verticalCenter: parent.verticalCenter
+    }
+  }
 
   component DetailValue: InfoValue {
     property bool copyable: false
