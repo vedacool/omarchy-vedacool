@@ -122,7 +122,7 @@ Item {
     onLoaded: {
       try {
         var data = JSON.parse(text())
-        root.news = data.items || []
+        root.news = Array.isArray(data.items) ? data.items : []
         root.newsFetched = data.fetched || 0
       } catch (e) {}
     }
@@ -196,8 +196,13 @@ Item {
       else if (key === "host") hostname = f.slice(1).join(" ")
       else if (key === "kernel") kernel = f.slice(1).join(" ")
     }
-    prevTotals = totals
-    cores = nextCores
+    // An empty/failed sampler run parses no cpu lines; keep the previous
+    // baseline and core list rather than wiping them, which zero-blipped CPU and
+    // emptied the per-thread bars for a frame, then mis-computed the next sample.
+    if (Object.keys(totals).length > 0) {
+      prevTotals = totals
+      cores = nextCores
+    }
 
     var hist = cpuHistory.slice(-39)
     hist.push(cpu)

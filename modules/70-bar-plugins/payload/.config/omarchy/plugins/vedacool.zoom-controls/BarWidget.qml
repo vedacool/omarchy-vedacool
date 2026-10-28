@@ -90,7 +90,7 @@ BarWidget {
   }
 
   function keepZoomClear(tb, others) {
-    if (!toolbarShown || !tb.at || tb.at[1] < 0) return
+    if (!toolbarShown || !tb.at || !tb.size || tb.at[1] < 0) return
     var overlap = false
     for (var i = 0; i < others.length; i++)
       if (others[i].at && others[i].at[1] < tb.at[1] + tb.size[1]) overlap = true

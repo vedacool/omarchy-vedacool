@@ -123,28 +123,24 @@ Item {
     return { back: back || "M 0 0", front: front || "M 0 0", nodes: nodes || "M 0 0", inner: inner || "M 0 0" }
   }
 
-  // Sphere grid around the core with slowly turning meridians.
+  // Static sphere-grid rings + crosshair, in their OWN Shape so they tessellate
+  // once (on resize) rather than rebuilding every tick alongside the moving
+  // meridians — a QtQuick Shape re-triangulates whenever ANY of its ShapePaths
+  // changes, and per-tick ellipse re-tessellation is what stresses the r600 GPU.
+  // Same z-order and look as before.
   Shape {
-    id: grid
+    id: gridStatic
     visible: core.part !== "core"
     anchors.fill: parent
     opacity: 0.45
-    readonly property real phase: core.t * 0.6 * Math.PI / 180
     readonly property real gr: core.rad * 0.8
 
     ShapePath {
       strokeColor: Qt.alpha(core.sig, 0.22)
       strokeWidth: 1
       fillColor: "transparent"
-      PathAngleArc { centerX: core.ccx; centerY: core.ccy; radiusX: grid.gr; radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
-      PathAngleArc { centerX: core.ccx; centerY: core.ccy; radiusX: grid.gr; radiusY: core.rad * 0.22; startAngle: 0; sweepAngle: 360 }
-    }
-    ShapePath {
-      strokeColor: Qt.alpha(core.sig, 0.26)
-      strokeWidth: 1
-      fillColor: "transparent"
-      PathAngleArc { centerX: core.ccx; centerY: core.ccy; radiusX: grid.gr * Math.abs(Math.sin(grid.phase)); radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
-      PathAngleArc { centerX: core.ccx; centerY: core.ccy; radiusX: grid.gr * Math.abs(Math.sin(grid.phase + 1.571)); radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
+      PathAngleArc { centerX: core.ccx; centerY: core.ccy; radiusX: gridStatic.gr; radiusY: gridStatic.gr; startAngle: 0; sweepAngle: 360 }
+      PathAngleArc { centerX: core.ccx; centerY: core.ccy; radiusX: gridStatic.gr; radiusY: core.rad * 0.22; startAngle: 0; sweepAngle: 360 }
     }
     ShapePath {
       strokeColor: Qt.alpha(core.sig, 0.24)
@@ -156,6 +152,24 @@ Item {
       PathLine { x: core.ccx + core.rad * 1.0; y: core.ccy }
       PathMove { x: core.ccx; y: core.ccy - core.rad * 0.96 }
       PathLine { x: core.ccx; y: core.ccy - core.rad * 0.84 }
+    }
+  }
+
+  // Slowly turning meridians only — the sole per-tick tessellation here now.
+  Shape {
+    id: grid
+    visible: core.part !== "core"
+    anchors.fill: parent
+    opacity: 0.45
+    readonly property real phase: core.t * 0.6 * Math.PI / 180
+    readonly property real gr: core.rad * 0.8
+
+    ShapePath {
+      strokeColor: Qt.alpha(core.sig, 0.26)
+      strokeWidth: 1
+      fillColor: "transparent"
+      PathAngleArc { centerX: core.ccx; centerY: core.ccy; radiusX: grid.gr * Math.abs(Math.sin(grid.phase)); radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
+      PathAngleArc { centerX: core.ccx; centerY: core.ccy; radiusX: grid.gr * Math.abs(Math.sin(grid.phase + 1.571)); radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
     }
   }
 

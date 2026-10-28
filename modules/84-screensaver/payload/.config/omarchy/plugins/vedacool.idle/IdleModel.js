@@ -1,6 +1,8 @@
 function secondsFromConfig(value, fallback) {
   var n = Number(value)
-  if (!isFinite(n) || n < 0) return fallback
+  // Treat 0 as "unset" too: a 0 timeout makes IdleMonitor report always-idle,
+  // which would fire the screensaver/lock immediately and continuously.
+  if (!isFinite(n) || n <= 0) return fallback
   return Math.floor(n)
 }
 

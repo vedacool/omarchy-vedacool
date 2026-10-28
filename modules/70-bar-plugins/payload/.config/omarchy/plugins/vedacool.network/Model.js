@@ -224,8 +224,12 @@ function pingLatencyState(previous, next, limit, averageLimit) {
   var routerSamples = reset ? [] : prev.routerPingSamples
   var internetSamples = reset ? [] : prev.internetPingSamples
 
-  routerSamples = sample.router_ping_ms === undefined ? [] : appendPingSample(routerSamples, sample.router_ping_ms, window)
-  internetSamples = sample.internet_ping_ms === undefined ? [] : appendPingSample(internetSamples, sample.internet_ping_ms, window)
+  // A sample that omits a *_ping_ms key means "no new probe this tick" — keep the
+  // existing window rather than discarding all history (which made latency/loss
+  // flip between "Timeout"/"100%" and "--"). A present-but-empty value is still a
+  // real (timed-out) sample and goes through appendPingSample as a null.
+  if (sample.router_ping_ms !== undefined) routerSamples = appendPingSample(routerSamples, sample.router_ping_ms, window)
+  if (sample.internet_ping_ms !== undefined) internetSamples = appendPingSample(internetSamples, sample.internet_ping_ms, window)
 
   return {
     pingIface: iface,

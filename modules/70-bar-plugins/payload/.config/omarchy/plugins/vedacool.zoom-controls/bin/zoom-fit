@@ -10,6 +10,15 @@
 STATE="${XDG_RUNTIME_DIR:-/tmp}/zoom-controls"
 CONTROLS='^(as_toolbar|annotate_toolbar|zoom_linux_float_video_window|as_preview)$'
 mkdir -p "$STATE"
+
+# Serialize fit vs restore: both read/write/delete the saved-state files, so a
+# quick show->hide could fire `restore` while a `fit` is still positioning
+# windows (and deleting state files it is mid-write). flock makes them mutually
+# exclusive — the second invocation waits for the first to finish, then sees a
+# consistent state dir. Held for the whole run via fd 9.
+exec 9>"$STATE/.lock"
+flock 9
+
 clients=$(hyprctl clients -j)
 
 place() {  # address x y w h

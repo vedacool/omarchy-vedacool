@@ -53,7 +53,10 @@ function matchingScaleIndex(scales, currentScale, width, height) {
 }
 
 function availableScales(scales, width, height) {
-  if (!Array.isArray(scales) || Number(width) <= 0 || Number(height) <= 0) return scales || []
+  // Use `!(x > 0)` not `x <= 0`: Number(undefined)/Number("") is NaN, and
+  // `NaN <= 0` is false, so a `<= 0` test would let missing dims slip through
+  // and cleanScale() would then map every preset to "" -> one collapsed entry.
+  if (!Array.isArray(scales) || !(Number(width) > 0) || !(Number(height) > 0)) return scales || []
 
   var byEffectiveScale = {}
   for (var i = 0; i < scales.length; i++) {

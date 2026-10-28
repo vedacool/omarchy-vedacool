@@ -37,34 +37,32 @@ Item {
 
   SystemClock {
     id: clock
+    // Stop the per-second tick (and the pill/date/news bindings it drives) when
+    // the HUD is paused/hidden — the rest of the HUD already freezes via `running`.
+    enabled: hs.hud.running
     precision: SystemClock.Seconds
   }
 
   // ============================================================ animated: back
-  // Sphere grid with slowly turning meridians.
+  // Static sphere-grid rings + crosshair, in their OWN Shape. A QtQuick Shape
+  // re-triangulates whenever ANY of its ShapePaths changes, so keeping these
+  // constant rings in the same Shape as the moving meridians rebuilt the whole
+  // grid every tick on the weak r600 GPU. Split out, this geometry tessellates
+  // once (on resize) and is reused each frame. Same z-order as before.
   Shape {
-    id: grid
+    id: gridStatic
     anchors.fill: parent
     opacity: 0.55
-    readonly property real phase: hs.t * 0.9 * Math.PI / 180
     readonly property real gr: hs.rad * 0.8
 
     ShapePath {
       strokeColor: Qt.alpha(hs.hud.cyan, 0.22)
       strokeWidth: 1
       fillColor: "transparent"
-      PathAngleArc { centerX: hs.cx; centerY: hs.cy; radiusX: grid.gr; radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
-      PathAngleArc { centerX: hs.cx; centerY: hs.cy; radiusX: grid.gr; radiusY: hs.rad * 0.22; startAngle: 0; sweepAngle: 360 }
+      PathAngleArc { centerX: hs.cx; centerY: hs.cy; radiusX: gridStatic.gr; radiusY: gridStatic.gr; startAngle: 0; sweepAngle: 360 }
+      PathAngleArc { centerX: hs.cx; centerY: hs.cy; radiusX: gridStatic.gr; radiusY: hs.rad * 0.22; startAngle: 0; sweepAngle: 360 }
       PathAngleArc { centerX: hs.cx; centerY: hs.cy - hs.rad * 0.45; radiusX: hs.rad * 0.66; radiusY: hs.rad * 0.16; startAngle: 0; sweepAngle: 360 }
       PathAngleArc { centerX: hs.cx; centerY: hs.cy + hs.rad * 0.45; radiusX: hs.rad * 0.66; radiusY: hs.rad * 0.16; startAngle: 0; sweepAngle: 360 }
-    }
-    ShapePath {
-      strokeColor: Qt.alpha(hs.hud.cyan, 0.30)
-      strokeWidth: 1
-      fillColor: "transparent"
-      PathAngleArc { centerX: hs.cx; centerY: hs.cy; radiusX: grid.gr * Math.abs(Math.sin(grid.phase)); radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
-      PathAngleArc { centerX: hs.cx; centerY: hs.cy; radiusX: grid.gr * Math.abs(Math.sin(grid.phase + 1.047)); radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
-      PathAngleArc { centerX: hs.cx; centerY: hs.cy; radiusX: grid.gr * Math.abs(Math.sin(grid.phase + 2.094)); radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
     }
     ShapePath {
       strokeColor: Qt.alpha(hs.hud.cyan, 0.28)
@@ -74,6 +72,24 @@ Item {
       PathLine { x: hs.cx + hs.rad * 1.12; y: hs.cy }
       PathMove { x: hs.cx; y: hs.cy - hs.rad * 1.2 }
       PathLine { x: hs.cx; y: hs.cy + hs.rad * 1.2 }
+    }
+  }
+
+  // Slowly turning meridians only — the sole per-tick tessellation here now.
+  Shape {
+    id: grid
+    anchors.fill: parent
+    opacity: 0.55
+    readonly property real phase: hs.t * 0.9 * Math.PI / 180
+    readonly property real gr: hs.rad * 0.8
+
+    ShapePath {
+      strokeColor: Qt.alpha(hs.hud.cyan, 0.30)
+      strokeWidth: 1
+      fillColor: "transparent"
+      PathAngleArc { centerX: hs.cx; centerY: hs.cy; radiusX: grid.gr * Math.abs(Math.sin(grid.phase)); radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
+      PathAngleArc { centerX: hs.cx; centerY: hs.cy; radiusX: grid.gr * Math.abs(Math.sin(grid.phase + 1.047)); radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
+      PathAngleArc { centerX: hs.cx; centerY: hs.cy; radiusX: grid.gr * Math.abs(Math.sin(grid.phase + 2.094)); radiusY: grid.gr; startAngle: 0; sweepAngle: 360 }
     }
   }
 

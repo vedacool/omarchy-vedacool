@@ -17,6 +17,7 @@ Panel {
   property int brightnessPercent: 0
   property int pendingBrightnessPercent: 0
   property bool brightnessSetQueued: false
+  property var pendingActionCommand: null
   property bool brightnessAvailable: false
   property string internalMonitor: ""
   property string externalMonitor: ""
@@ -244,7 +245,12 @@ Panel {
     }
 
     root.brightnessSetQueued = false
-    setBrightnessProc.command = ["omarchy-brightness-display", "--no-osd", "--monitor", root.focusedMonitor, percent + "%"]
+    // Only pass --monitor once we actually know the focused output; an empty
+    // "--monitor ''" can make the CLI fail silently or target the wrong screen.
+    var cmd = ["omarchy-brightness-display", "--no-osd"]
+    if (root.focusedMonitor) cmd.push("--monitor", root.focusedMonitor)
+    cmd.push(percent + "%")
+    setBrightnessProc.command = cmd
     setBrightnessProc.running = true
   }
 
@@ -296,24 +302,32 @@ Panel {
     root.enabledDisplayCount = parsed.enabledDisplayCount
   }
 
+  // Run a monitor action through actionProc. If one is already running, queue
+  // this command and dispatch it when the current one finishes — otherwise a
+  // quick second action (e.g. Extend then Mirror) was assigned to .command but
+  // never started, so the click silently did nothing.
+  function runAction(cmd) {
+    if (actionProc.running) { root.pendingActionCommand = cmd; return }
+    root.pendingActionCommand = null
+    actionProc.command = cmd
+    actionProc.running = true
+  }
+
   function toggleDisplay(name, enabled) {
     if (!name) return
     if (enabled && root.enabledDisplayCount <= 1) return
 
-    actionProc.command = ["hyprctl", "keyword", "monitor", name + (enabled ? ",disable" : ",preferred,auto,auto")]
-    if (!actionProc.running) actionProc.running = true
+    runAction(["hyprctl", "keyword", "monitor", name + (enabled ? ",disable" : ",preferred,auto,auto")])
   }
 
   function setScale(scale) {
-    actionProc.command = ["bash", "-c", "omarchy-hyprland-monitor-scaling " + scale]
-    if (!actionProc.running) actionProc.running = true
+    runAction(["bash", "-c", "omarchy-hyprland-monitor-scaling " + scale])
   }
 
   // Projector quick actions: mirror / extend left / extend right / off,
   // for the first external monitor. See omarchy-hyprland-monitor-external-mode.
   function setExternalMode(mode) {
-    actionProc.command = ["omarchy-hyprland-monitor-external-mode", mode]
-    if (!actionProc.running) actionProc.running = true
+    runAction(["omarchy-hyprland-monitor-external-mode", mode])
   }
 
   // ---- Text size (shell base font + GTK text-scaling, via one CLI) ----
@@ -398,8 +412,12 @@ Panel {
       onStreamFinished: {
         var lines = String(text || "").split("\n")
         var brightness = String(lines[0] || "").trim()
-        root.brightnessAvailable = brightness !== "unavailable" && brightness !== ""
-        root.brightnessPercent = root.brightnessAvailable ? Math.max(0, Math.min(100, parseInt(brightness, 10))) : 0
+        var brightnessVal = parseInt(brightness, 10)
+        // Require a real number: a non-numeric-but-nonempty value (e.g. "err")
+        // would otherwise pass the availability test and set brightnessPercent
+        // to NaN, which propagates into the slider and labels.
+        root.brightnessAvailable = brightness !== "unavailable" && brightness !== "" && isFinite(brightnessVal)
+        root.brightnessPercent = root.brightnessAvailable ? Math.max(0, Math.min(100, brightnessVal)) : 0
         root.internalMonitor = String(lines[1] || "").trim()
         root.externalMonitor = String(lines[2] || "").trim()
         root.internalEnabled = String(lines[3] || "").trim() !== ""
@@ -439,7 +457,19 @@ Panel {
   Process {
     id: actionProc
     stdout: StdioCollector { waitForEnd: true }
-    onRunningChanged: if (!running) root.refresh()
+    onRunningChanged: {
+      if (running) return
+      // Dispatch a queued action before refreshing, so a second rapid click
+      // isn't dropped.
+      if (root.pendingActionCommand) {
+        var cmd = root.pendingActionCommand
+        root.pendingActionCommand = null
+        actionProc.command = cmd
+        actionProc.running = true
+        return
+      }
+      root.refresh()
+    }
   }
 
   // Applies text size via the CLI, which rewrites the shell override file;
@@ -598,7 +628,7 @@ Panel {
 
             Item {
               width: parent.width
-              implicitHeight: Math.max(brightnessHeader.implicitHeight, brightnessPercent.implicitHeight)
+              implicitHeight: Math.max(brightnessHeader.implicitHeight, brightnessValueText.implicitHeight)
 
               PanelSectionHeader {
                 id: brightnessHeader
@@ -610,7 +640,7 @@ Panel {
               }
 
               Text {
-                id: brightnessPercent
+                id: brightnessValueText
                 textFormat: Text.PlainText
                 text: Math.round(brightnessSlider.dragging ? brightnessSlider.liveValue : root.brightnessPercent) + "%"
                 color: Qt.darker(root.bar.foreground, 1.4)

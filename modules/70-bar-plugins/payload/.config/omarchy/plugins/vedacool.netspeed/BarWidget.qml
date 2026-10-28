@@ -25,6 +25,10 @@ BarWidget {
 
   function formatRate(bytesPerSec) {
     var kb = bytesPerSec / 1024
+    if (kb >= 1024) {
+      var mb = kb / 1024
+      return mb.toFixed(mb < 10 ? 1 : 0) + "MB/s"
+    }
     return kb.toFixed(kb < 10 ? 1 : 0) + "KB/s"
   }
 
@@ -85,8 +89,8 @@ BarWidget {
   Process {
     id: sampleProc
     command: ["bash", "-c",
-      "iface=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}'); " +
-      "[ -z \"$iface\" ] && iface=$(ip -6 route show default 2>/dev/null | awk '{print $5; exit}'); " +
+      "iface=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i==\"dev\"){print $(i+1);exit}}'); " +
+      "[ -z \"$iface\" ] && iface=$(ip -6 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i==\"dev\"){print $(i+1);exit}}'); " +
       "if [ -n \"$iface\" ] && [ -r \"/sys/class/net/$iface/statistics/rx_bytes\" ]; then " +
       "printf 'iface\\t%s\\n' \"$iface\"; " +
       "printf 'rx_bytes\\t%s\\n' \"$(cat /sys/class/net/$iface/statistics/rx_bytes)\"; " +
@@ -100,7 +104,8 @@ BarWidget {
 
   Timer {
     interval: 1500
-    running: true
+    // Don't fork the sampler while the pill is hidden (e.g. bar auto-hidden).
+    running: root.visible
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refresh()

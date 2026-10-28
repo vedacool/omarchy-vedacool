@@ -78,8 +78,9 @@ Item {
     root.idledThisCycle = false
     root.screensaverStartedThisCycle = false
     resetScreensaverWindows()
-    // vedacool: also take down the native VEDA screensaver (a layer, not a window).
-    runProcess(lockProcess, "lock", "omarchy-system-lock; omarchy-shell vedaterm screensaver hide >/dev/null 2>&1 || true")
+    // vedacool: also take down BOTH screensaver forms (native layer + foot
+    // window) and restore the cursor, so neither lingers under the lock screen.
+    runProcess(lockProcess, "lock", "omarchy-system-lock; pkill -f '[o]rg.omarchy.screensaver' 2>/dev/null; omarchy-shell vedaterm screensaver hide >/dev/null 2>&1 || true; hyprctl keyword cursor:invisible false >/dev/null 2>&1 || true")
   }
 
   function startIdleCycle() {
@@ -106,7 +107,12 @@ Item {
     lockTimer.stop()
     screensaverLaunchGraceTimer.stop()
 
-    if (root.idledThisCycle) runProcess(wakeProcess, "wake", "omarchy-system-wake")
+    // Failsafe teardown: don't rely on the screensaver self-exiting. Kill any
+    // foot screensaver, hide the native layer, and force the cursor back on --
+    // if foot was SIGKILLed/crashed its own cleanup trap never ran and the
+    // cursor could be stuck invisible; an in-flight launch is also killed here.
+    if (root.idledThisCycle) runProcess(wakeProcess, "wake",
+      "omarchy-system-wake; pkill -f '[o]rg.omarchy.screensaver' 2>/dev/null; omarchy-shell vedaterm screensaver hide >/dev/null 2>&1 || true; hyprctl keyword cursor:invisible false >/dev/null 2>&1 || true")
 
     root.idledThisCycle = false
     root.screensaverStartedThisCycle = false
@@ -284,7 +290,11 @@ Item {
 
   Timer {
     id: screensaverLaunchGraceTimer
-    interval: 3000
+    // 6s, not 3s: a foot cold-start + VEDA init on the legacy Radeon can take
+    // longer than 3s, and if the user returns during that slow launch the old
+    // grace expired and cancelled the cycle while the window was still mapping,
+    // orphaning the screensaver. The wake failsafe kills any in-flight launch.
+    interval: 6000
     repeat: false
     onTriggered: {
       if (root.idleEnabled && root.idledThisCycle && root.screensaverStartedThisCycle && root.screensaverWindowCount === 0 && !idleMonitor.isIdle) {

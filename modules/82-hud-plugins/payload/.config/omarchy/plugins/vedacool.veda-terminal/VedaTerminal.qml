@@ -71,6 +71,11 @@ Item {
     onTriggered: {
       root.checkMirror()
       Hyprland.refreshMonitors()
+      // While the screensaver covers the outputs the HUD is hidden, so skip the
+      // toplevel scan (refreshToplevels + the window-list loops) — exactly the
+      // hidden-state cost the pause machinery exists to shed. Resumes the next
+      // tick after the screensaver dismisses.
+      if (root.ssShown || root.ssPreview) return
       root.bigWindow = root.hasBigWindow(root.hudMonitor)
       root.extBigWindow = root.hasBigWindow(root.extMonitor)
       root.sharing = root.zoomSharing()
@@ -162,7 +167,7 @@ Item {
     onLoaded: {
       try {
         var data = JSON.parse(text())
-        root.news = data.items || []
+        root.news = Array.isArray(data.items) ? data.items : []
         root.newsFetched = data.fetched || 0
         // Only report a sync that brought something new, not every reload.
         var key = root.news.length + "|" + (root.news.length ? root.news[0].title : "")
@@ -392,8 +397,13 @@ Item {
       else if (key === "host") hostname = f.slice(1).join(" ")
       else if (key === "kernel") kernel = f.slice(1).join(" ")
     }
-    prevTotals = totals
-    cores = nextCores
+    // An empty/failed sampler run parses no cpu lines; keep the previous baseline
+    // and core list rather than wiping them (which emptied the per-thread panel
+    // for a frame and zero-blipped CPU on the next good sample).
+    if (Object.keys(totals).length > 0) {
+      prevTotals = totals
+      cores = nextCores
+    }
 
     var hist = cpuHistory.slice(-39)
     hist.push(cpu)
@@ -505,7 +515,11 @@ Item {
   readonly property var extMonitor: extScreens.length > 0 ? Hyprland.monitorFor(extScreens[0]) : null
   property bool extBigWindow: false
   readonly property bool extCovered: extBigWindow || !!(extMonitor && extMonitor.activeWorkspace && extMonitor.activeWorkspace.hasFullscreen)
-  readonly property bool extRunning: active && extScreens.length > 0 && !idleMonitor.isIdle && !extCovered && !sharing
+  // Also stop when the screensaver covers the outputs. ssScreens covers every
+  // non-mirror output incl. the projector, so without this the projection HUD
+  // kept animating full-tilt under an opaque screensaver on a manual (non-idle)
+  // trigger -- the !idleMonitor.isIdle term only caught the idle-launched path.
+  readonly property bool extRunning: active && extScreens.length > 0 && !idleMonitor.isIdle && !extCovered && !sharing && !ssShown && !ssPreview
   property int extTick: 0
 
   Timer {

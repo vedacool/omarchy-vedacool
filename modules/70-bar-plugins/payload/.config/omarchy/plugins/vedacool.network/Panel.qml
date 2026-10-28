@@ -186,7 +186,14 @@ Panel {
   // header line, then the pills. Same shape as wifiActionFocused.
   property bool bandAutoFocused: true
 
-  onHeaderActionCountChanged: clampHeaderIndex()
+  onHeaderActionCountChanged: {
+    clampHeaderIndex()
+    // If every header action vanished (e.g. Wi-Fi adapter removed) while the
+    // cursor was on the header, move it somewhere visible so the panel isn't
+    // left highlighting nothing.
+    if (headerActionCount === 0 && focusSection === "header")
+      focusSection = wifiNetworks.length > 0 ? "wifi" : "dns"
+  }
 
   // Availability shifts as scans land, so the option list can shrink out from
   // under the cursor. Clamp the index and evacuate the section before it
@@ -405,6 +412,13 @@ Panel {
       internetPingPacketLoss = 0
       scanInProgress = false
       scanCountdown = 0
+      // Drop in-flight action tracking so rows aren't stuck disabled on
+      // "Connecting…" if the panel is reopened before the 30s safety timeout
+      // (whose fire would also have triggered a closed-panel refresh). The
+      // underlying nmcli action still runs; native state reflects its result.
+      actionTimeout.stop()
+      actionSsid = ""
+      actionKind = ""
       setScannerEnabled(false)
     }
   }
@@ -424,6 +438,12 @@ Panel {
   // If the list empties (station gone, e.g. wifi off), bounce the cursor
   // back to the DNS row so the panel doesn't end up with no cursor at all.
   onWifiNetworksChanged: {
+    // If a passphrase prompt is open for a network that has now left the list
+    // (signal dropped, Wi-Fi toggled off), clear it — otherwise keyCatcher stays
+    // blocked (blocked: passwordSsid !== "") after its row/TextField unmounts and
+    // keyboard nav soft-locks until you click outside.
+    if (passwordSsid !== "" && wifiIndexForSsid(passwordSsid) < 0) cancelPasswordPrompt()
+
     if (wifiNetworks.length === 0) {
       selectedIndex = -1
       wifiActionFocused = false
@@ -532,22 +552,29 @@ Panel {
 
   function refresh(scanWifi) {
     if (scanWifi === undefined) scanWifi = false
-    if (!detailsProc.running) detailsProc.running = true
-    if (!dnsProc.running) {
-      dnsProc.command = ["bash", "-c", root.dnsCommand("")]
-      dnsProc.running = true
-    }
-    if (!dnsAddrProc.running) {
-      dnsAddrProc.command = ["bash", "-c", root.dnsServersCommand()]
-      dnsAddrProc.running = true
-    }
-    if (!publicIpProc.running) {
-      publicIpProc.command = ["bash", "-c", root.publicIpCommand()]
-      publicIpProc.running = true
-    }
-    if (!bandProc.running) {
-      bandProc.command = ["omarchy-network-band"]
-      bandProc.running = true
+    // These only feed the open panel's detail rows; the bar pill reads the
+    // NetworkManager backend directly. Running them while closed wastes work and,
+    // for the public-IP lookup, fires an EXTERNAL curl at shell startup and after
+    // every close-time action — contradicting the "public IP only updates while
+    // open" contract. Gate the whole set on `opened`; a reopen re-fetches.
+    if (opened) {
+      if (!detailsProc.running) detailsProc.running = true
+      if (!dnsProc.running) {
+        dnsProc.command = ["bash", "-c", root.dnsCommand("")]
+        dnsProc.running = true
+      }
+      if (!dnsAddrProc.running) {
+        dnsAddrProc.command = ["bash", "-c", root.dnsServersCommand()]
+        dnsAddrProc.running = true
+      }
+      if (!publicIpProc.running) {
+        publicIpProc.command = ["bash", "-c", root.publicIpCommand()]
+        publicIpProc.running = true
+      }
+      if (!bandProc.running) {
+        bandProc.command = ["omarchy-network-band"]
+        bandProc.running = true
+      }
     }
     // A closed panel has no nearby-network list to fill, and bare refresh()
     // reaches here from action completion, timeouts and construction.
@@ -713,9 +740,11 @@ Panel {
 
   function updatePublicIp(raw) {
     var value = String(raw || "").trim()
-    // Only accept something that looks like an address; an error page or a
-    // captive-portal redirect must not land in the field.
-    publicIp = /^[0-9a-fA-F:.]+$/.test(value) ? value : ""
+    // Validate as a real IPv4 or IPv6 address; the loose [0-9a-fA-F:.] class let
+    // junk through (e.g. a captive-portal word like "cafe", or "::::"/"....").
+    var ipv4 = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/
+    var ipv6 = /^(?=.*:)[0-9a-fA-F:]+(?:%[0-9a-zA-Z._-]+)?$/   // loose: needs a colon
+    publicIp = (ipv4.test(value) || ipv6.test(value)) ? value : ""
   }
 
   // Ask an external echo service what address the internet sees. A short
