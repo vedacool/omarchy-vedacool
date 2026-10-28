@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=Tinkercad
+Comment=Tinkercad 3D design (browser app, software WebGL for the old GPU)
+Exec=google-chrome-stable --app=https://www.tinkercad.com/ --profile-directory=Default --enable-unsafe-swiftshader --disable-gpu --class=Tinkercad
+Terminal=false
+Type=Application
+Icon=applications-engineering
+StartupWMClass=Tinkercad
+Categories=Education;Graphics;Engineering;

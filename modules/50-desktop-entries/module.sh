@@ -1,8 +1,8 @@
-MOD_DESC="Desktop entries: Claude opens in ~/Work, WhatsApp pinned to Chrome profile, agent-window Claude icon"
+MOD_DESC="Desktop entries: Claude opens in ~/Work, WhatsApp pinned to Chrome profile, agent-window icon, Tinkercad app"
 MOD_SUDO="no"
 MOD_DEPS=""
 MOD_REQUIRES=""
-EXPORT_PATHS=".local/share/applications/Claude.desktop .local/share/applications/WhatsApp.desktop .local/share/applications/org.omarchy.agent.desktop"
+EXPORT_PATHS=".local/share/applications/Claude.desktop .local/share/applications/WhatsApp.desktop .local/share/applications/org.omarchy.agent.desktop .local/share/applications/Tinkercad.desktop"
 
 apply() {
   local appdir="$HOME/.local/share/applications"
@@ -36,6 +36,11 @@ apply() {
   if [[ -f $agent ]] && grep -q '^StartupWMClass=org.omarchy.agent$' "$agent"; then ok "agent window gets the Claude icon"
   elif [[ -f $PAYLOAD/.local/share/applications/org.omarchy.agent.desktop ]]; then
     copy_payload ".local/share/applications/org.omarchy.agent.desktop"; fix "org.omarchy.agent.desktop installed (Claude icon)"
+  fi
+
+  # Tinkercad app launcher (software WebGL for 3D; needs module 30's chrome flags).
+  if [[ -f $PAYLOAD/.local/share/applications/Tinkercad.desktop ]]; then
+    copy_payload ".local/share/applications/Tinkercad.desktop"; ok "Tinkercad launcher installed"
   fi
 
   act update-desktop-database "$appdir" >/dev/null 2>&1
