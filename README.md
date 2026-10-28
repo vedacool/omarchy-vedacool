@@ -92,6 +92,7 @@ preflight tells you if your selection is missing one).
 | `10-sleep-hibernate` | Lid-close hibernate, Atheros wifi resume fix, single-password wake | ✓ | Atheros wifi |
 | `20-hypr-desktop` | Windows-like Hyprland: float-by-default, edge-snap, border resize, SUPER+M/N, auto-hide dock, scale 1/1 | | weak/old GPU |
 | `30-chrome-flags` | Chrome: software GPU, Wayland IME, 80% UI | | old GPU / small screen |
+| `35-abiword` | AbiWord (lightweight WordPad-style editor) + default for text files | ✓ | |
 | `40-dock-pins` | Dock pins: Chrome, Zoom, WhatsApp | | |
 | `45-av-jack-notify` | Toast on 3.5mm headphone + HDMI plug/unplug | | |
 | `50-desktop-entries` | Claude opens in `~/Work`, WhatsApp pinned to one Chrome profile, agent-window icon | | |

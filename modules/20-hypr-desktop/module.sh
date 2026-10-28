@@ -64,5 +64,22 @@ o.bind("SUPER + N", "Minimise", hl.dsp.window.move({ workspace = "special:minimi
       warn "monitors.lua scale is custom (neither 1/1 nor Omarchy default); left alone"
     fi
   fi
+
+  # Zoom desktop (XWayland) window rules — what makes screen-share actually usable.
+  # The full Zoom experience also needs the vedacool.zoom-controls plugin (module
+  # 70-bar-plugins), the dock pin (module 40), and the native `zoom` package.
+  ensure_block "$HYPR/hyprland.lua" 'allows_input = true' "Zoom share toolbar accepts input" \
+'-- Zoom (XWayland) marks its screen-share toolbar as a tooltip window, so Hyprland
+-- won'"'"'t let it take input (Stop share / Audio / Video unclickable). Force input.
+o.window({ class = "^zoom$", title = "^(as_toolbar|annotate_toolbar|zoom_linux_float_video_window)$" }, { allows_input = true })'
+  ensure_block "$HYPR/hyprland.lua" 'focus_on_activate = false' "Zoom: ignore its focus-steal requests" \
+'-- Zoom keeps asking for its Meeting window to be focused; ignore that (a dock
+-- click or ALT+TAB still restores it).
+o.window("^zoom$", { focus_on_activate = false })'
+  ensure_block "$HYPR/hyprland.lua" 'monitor_h-26' "Zoom: cap window size to the screen" \
+'-- Cap Zoom windows at screen size (below the bar) so opening Chat/Participants
+-- doesn'"'"'t push the Meeting window off the right edge.
+o.window("^zoom$", { max_size = { "(monitor_w)", "(monitor_h-26)" } })'
+
   hypr_finish
 }

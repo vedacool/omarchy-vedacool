@@ -265,6 +265,16 @@ else
   warn "monitors.lua missing"
 fi
 
+# Zoom desktop (XWayland) rules — make the screen-share toolbar clickable etc.
+ensure_block "$HYPR/hyprland.lua" 'allows_input = true' "Zoom share toolbar accepts input" \
+'-- Zoom (XWayland) marks its screen-share toolbar as a tooltip window, so Hyprland
+-- won'"'"'t let it take input. Force it. See the vedacool.zoom-controls plugin.
+o.window({ class = "^zoom$", title = "^(as_toolbar|annotate_toolbar|zoom_linux_float_video_window)$" }, { allows_input = true })'
+ensure_block "$HYPR/hyprland.lua" 'focus_on_activate = false' "Zoom: ignore its focus-steal requests" \
+'o.window("^zoom$", { focus_on_activate = false })'
+ensure_block "$HYPR/hyprland.lua" 'monitor_h-26' "Zoom: cap window size to the screen" \
+'o.window("^zoom$", { max_size = { "(monitor_w)", "(monitor_h-26)" } })'
+
 hypr_finish
 
 if hypr_live; then
@@ -602,9 +612,18 @@ else
 fi
 
 # Report only: reinstalling is a decision, not a silent side effect of an update.
-for pkg in google-chrome zoom masterpdfeditor; do
+for pkg in google-chrome zoom masterpdfeditor abiword; do
   if pacman -Q "$pkg" >/dev/null 2>&1; then ok "package $pkg installed"; else warn "package $pkg is no longer installed"; fi
 done
+
+# AbiWord is the default editor for plain text files (user, 2026-10-28).
+if command -v xdg-mime >/dev/null 2>&1 && command -v abiword >/dev/null 2>&1; then
+  if [[ "$(xdg-mime query default text/plain 2>/dev/null)" == abiword.desktop ]]; then
+    ok "AbiWord is the default for text files"
+  else
+    act xdg-mime default abiword.desktop text/plain && fix "AbiWord re-set as default for text/plain"
+  fi
+fi
 
 # ------------------------------------------- audio jack notifier (user service)
 # Toast on 3.5mm headphone / HDMI plug-unplug. Pure user-level files, so an
