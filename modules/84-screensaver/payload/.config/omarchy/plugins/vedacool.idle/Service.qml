@@ -135,9 +135,19 @@ Item {
     if (!root.idleEnabled || !root.idledThisCycle || !root.screensaverStartedThisCycle) return
     if (root.screensaverWindowCount > 0) return
 
-    // The user dismissed the screensaver before the lock deadline. Treat that
-    // as activity and cancel the pending lock; the lock timer is only allowed
-    // to fire while the screensaver remains up.
+    // Only a real user-dismiss counts as activity. If the compositor still
+    // reports idle, the screensaver was NOT dismissed -- it exited on its own
+    // (e.g. crashed, which this old GPU does). Cancelling then would stop the
+    // lock timer and re-wake the display, leaving the machine unlocked and on
+    // while the user is away. Keep the cycle armed so lockTimer still fires at
+    // the deadline; a later real activity signal cancels it the normal way.
+    if (idleMonitor.isIdle) {
+      logEvent("screensaver-exited-while-idle", "lock stays armed")
+      return
+    }
+
+    // The user dismissed the screensaver before the lock deadline (compositor
+    // saw activity). Treat that as activity and cancel the pending lock.
     root.cancelIdleCycle("screensaver-dismissed")
   }
 

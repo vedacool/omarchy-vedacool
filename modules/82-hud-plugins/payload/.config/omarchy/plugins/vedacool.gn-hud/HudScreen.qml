@@ -1,7 +1,6 @@
 import Quickshell
 import QtQuick
 import QtQuick.Shapes
-import QtQuick.Effects
 
 // One screen's worth of HUD, laid out after the Celestial Being drive-status
 // screen: a U-shaped particle gauge around the Exia hologram, two donut
@@ -263,17 +262,18 @@ Item {
       width: height * 507 / 1000
       x: hs.cx - width / 2
       y: hs.cy - hs.rad * 0.9
-      source: Qt.resolvedUrl("exia.png")
+      // Trans-Am tint is a pre-rendered sprite swap, NOT a MultiEffect. A
+      // runtime-generated colorization shader + its FBO, created/destroyed on
+      // this legacy Radeon (Mesa r600g) exactly when CPU is already pegged
+      // (Trans-Am engages on sustained high load), is a known segfault / GPU-
+      // reset vector. Swapping to an already-tinted texture is a cached, zero-
+      // shader operation. exia-transam.png = exia.png colorized 85% -> #ff4fe6
+      // with +10% brightness (ImageMagick), matching the old effect.
+      source: Qt.resolvedUrl(hs.hud.transAm ? "exia-transam.png" : "exia.png")
       sourceSize.height: height
       smooth: true
       mipmap: true
       opacity: 0.95
-      layer.enabled: hs.hud.transAm
-      layer.effect: MultiEffect {
-        colorization: 0.85
-        colorizationColor: "#ff4fe6"
-        brightness: 0.1
-      }
     }
 
     // -------------------------------------------------- donut readouts
