@@ -79,6 +79,15 @@ Panel {
   // The resolver addresses actually in force on the default-route interface
   // (what `dnsProvider` above *selects*; this is what the link ended up using).
   property string dnsServers: ""
+  // The address the internet sees us as -- resolved by an external echo
+  // service, so it only updates while the panel is open and lags a reconnect
+  // by a poll. Empty until the first lookup returns (or if we're offline).
+  property string publicIp: ""
+  // Split the resolver list into primary/secondary for their own rows. A third
+  // resolver (rare) folds into DNS 2 so it isn't silently dropped.
+  readonly property var dnsList: root.dnsServers ? root.dnsServers.split(" ").filter(function(s) { return s !== "" }) : []
+  readonly property string dns1: dnsList.length > 0 ? dnsList[0] : ""
+  readonly property string dns2: dnsList.length > 1 ? dnsList.slice(1).join(" ") : ""
   // Wi-Fi band state from `omarchy-network-band`. `bandCurrent` is the band
   // the radio is actually on; `bandSelected` is the pinned choice ("auto" when
   // nothing is pinned), and the two differ whenever Auto is in effect.
@@ -484,6 +493,10 @@ Panel {
       dnsAddrProc.command = ["bash", "-c", root.dnsServersCommand()]
       dnsAddrProc.running = true
     }
+    if (!publicIpProc.running) {
+      publicIpProc.command = ["bash", "-c", root.publicIpCommand()]
+      publicIpProc.running = true
+    }
     if (!bandProc.running) {
       bandProc.command = ["omarchy-network-band"]
       bandProc.running = true
@@ -642,6 +655,22 @@ Panel {
     return "dev=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i==\"dev\"){print $(i+1);exit}}');" +
       " [ -n \"$dev\" ] && nmcli -t -f IP4.DNS,IP6.DNS device show \"$dev\" 2>/dev/null" +
       " | sed 's/^[^:]*://' | awk 'NF && !seen[$0]++' | paste -sd' ' -"
+  }
+
+  function updatePublicIp(raw) {
+    var value = String(raw || "").trim()
+    // Only accept something that looks like an address; an error page or a
+    // captive-portal redirect must not land in the field.
+    publicIp = /^[0-9a-fA-F:.]+$/.test(value) ? value : ""
+  }
+
+  // Ask an external echo service what address the internet sees. A short
+  // timeout keeps a dead link from hanging the row, and the fallbacks cover one
+  // service being down or rate-limiting.
+  function publicIpCommand() {
+    return "for u in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do" +
+      " ip=$(curl -fsS --max-time 4 \"$u\" 2>/dev/null | tr -d '[:space:]');" +
+      " [ -n \"$ip\" ] && { printf '%s' \"$ip\"; break; }; done"
   }
 
   function updateBand(raw) {
@@ -886,6 +915,28 @@ Panel {
       if (dnsAddrProc.running) return
       dnsAddrProc.command = ["bash", "-c", root.dnsServersCommand()]
       dnsAddrProc.running = true
+    }
+  }
+
+  Process {
+    id: publicIpProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.updatePublicIp(text)
+    }
+  }
+
+  // An external round-trip, so poll gently: the public address only changes on
+  // an ISP lease renewal or a VPN toggle. refresh() also pulls it on open.
+  Timer {
+    id: publicIpPoll
+    interval: 30000
+    repeat: true
+    running: root.opened
+    onTriggered: {
+      if (publicIpProc.running) return
+      publicIpProc.command = ["bash", "-c", root.publicIpCommand()]
+      publicIpProc.running = true
     }
   }
 
@@ -1311,11 +1362,25 @@ Panel {
             tooltipText: "Copy gateway"
           }
 
-          InfoLabel { text: "DNS" }
+          InfoLabel { text: "DNS 1" }
           DetailValue {
-            text: root.dnsServers || "--"
-            copyable: !!root.dnsServers
-            tooltipText: "Copy DNS"
+            text: root.dns1 || "--"
+            copyable: !!root.dns1
+            tooltipText: "Copy DNS 1"
+          }
+          InfoLabel { text: "DNS 2" }
+          DetailValue {
+            text: root.dns2 || "--"
+            copyable: !!root.dns2
+            tooltipText: "Copy DNS 2"
+          }
+
+          InfoLabel { text: "Public IP" }
+          DetailValue {
+            Layout.columnSpan: 3
+            text: root.publicIp || "--"
+            copyable: !!root.publicIp
+            tooltipText: "Copy public IP"
           }
         }
       }
