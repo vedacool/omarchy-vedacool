@@ -76,6 +76,9 @@ Panel {
   property bool wifiStationAvailable: false
   property string dnsProvider: ""
   property string pendingDnsProvider: ""
+  // The resolver addresses actually in force on the default-route interface
+  // (what `dnsProvider` above *selects*; this is what the link ended up using).
+  property string dnsServers: ""
   // Wi-Fi band state from `omarchy-network-band`. `bandCurrent` is the band
   // the radio is actually on; `bandSelected` is the pinned choice ("auto" when
   // nothing is pinned), and the two differ whenever Auto is in effect.
@@ -477,6 +480,10 @@ Panel {
       dnsProc.command = ["bash", "-c", root.dnsCommand("")]
       dnsProc.running = true
     }
+    if (!dnsAddrProc.running) {
+      dnsAddrProc.command = ["bash", "-c", root.dnsServersCommand()]
+      dnsAddrProc.running = true
+    }
     if (!bandProc.running) {
       bandProc.command = ["omarchy-network-band"]
       bandProc.running = true
@@ -621,6 +628,20 @@ Panel {
   function updateDns(raw) {
     var value = String(raw || "").trim()
     dnsProvider = value || "DHCP"
+  }
+
+  function updateDnsServers(raw) {
+    dnsServers = String(raw || "").replace(/\s+/g, " ").trim()
+  }
+
+  // Resolver addresses for whichever interface currently holds the default
+  // route -- IP4 and IP6, de-duplicated, space-joined. nmcli (already a
+  // dependency here) reports per-device DNS, which is the link that is actually
+  // carrying traffic rather than the global systemd-resolved stub.
+  function dnsServersCommand() {
+    return "dev=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i==\"dev\"){print $(i+1);exit}}');" +
+      " [ -n \"$dev\" ] && nmcli -t -f IP4.DNS,IP6.DNS device show \"$dev\" 2>/dev/null" +
+      " | sed 's/^[^:]*://' | awk 'NF && !seen[$0]++' | paste -sd' ' -"
   }
 
   function updateBand(raw) {
@@ -843,6 +864,28 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.updateDns(text)
+    }
+  }
+
+  Process {
+    id: dnsAddrProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.updateDnsServers(text)
+    }
+  }
+
+  // DNS servers shift only on a reconnect or a provider change, so poll lazily
+  // -- refresh() already pulls them on open and after any DNS/band action.
+  Timer {
+    id: dnsAddrPoll
+    interval: 4000
+    repeat: true
+    running: root.opened
+    onTriggered: {
+      if (dnsAddrProc.running) return
+      dnsAddrProc.command = ["bash", "-c", root.dnsServersCommand()]
+      dnsAddrProc.running = true
     }
   }
 
@@ -1266,6 +1309,13 @@ Panel {
             text: root.info.gateway || "--"
             copyable: !!root.info.gateway
             tooltipText: "Copy gateway"
+          }
+
+          InfoLabel { text: "DNS" }
+          DetailValue {
+            text: root.dnsServers || "--"
+            copyable: !!root.dnsServers
+            tooltipText: "Copy DNS"
           }
         }
       }
