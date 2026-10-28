@@ -76,8 +76,9 @@ Panel {
   property bool wifiStationAvailable: false
   property string dnsProvider: ""
   property string pendingDnsProvider: ""
-  // The resolver addresses actually in force on the default-route interface
-  // (what `dnsProvider` above *selects*; this is what the link ended up using).
+  // The resolver that actually answers queries right now -- the catch-all link's
+  // DNS (Tailscale MagicDNS when it is on, otherwise the Wi-Fi link's DNS). This
+  // is what `dnsProvider` above *selects* among; here is what is really in force.
   property string dnsServers: ""
   // The address the internet sees us as -- resolved by an external echo
   // service, so it only updates while the panel is open and lags a reconnect
@@ -694,14 +695,20 @@ Panel {
     dnsServers = String(raw || "").replace(/\s+/g, " ").trim()
   }
 
-  // Resolver addresses for whichever interface currently holds the default
-  // route -- IP4 and IP6, de-duplicated, space-joined. nmcli (already a
-  // dependency here) reports per-device DNS, which is the link that is actually
-  // carrying traffic rather than the global systemd-resolved stub.
+  // The resolver that actually answers general queries. systemd-resolved routes
+  // every lookup to whichever link owns the "~." routing domain, so prefer that
+  // link's DNS -- this is what surfaces Tailscale MagicDNS (100.100.100.100) the
+  // moment it's on, instead of the now-bypassed Wi-Fi link DNS. Falls back to
+  // the default-route interface's DNS via nmcli when resolvectl is absent or
+  // nothing holds the catch-all. Link-local (fe80) and unique-local (fc/fd --
+  // e.g. Tailscale's IPv6 twin of the same resolver) are dropped as noise; the
+  // rest is de-duplicated and space-joined.
   function dnsServersCommand() {
-    return "dev=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i==\"dev\"){print $(i+1);exit}}');" +
-      " [ -n \"$dev\" ] && nmcli -t -f IP4.DNS,IP6.DNS device show \"$dev\" 2>/dev/null" +
-      " | sed 's/^[^:]*://' | awk 'NF && $0 !~ /^fe80:/ && !seen[$0]++' | paste -sd' ' -"
+    return "ifn=''; command -v resolvectl >/dev/null 2>&1 && ifn=$(resolvectl domain 2>/dev/null | awk -F'[()]' '/~\\.( |$)/{print $2; exit}');" +
+      " if [ -n \"$ifn\" ]; then raw=$(resolvectl dns 2>/dev/null | awk -F': ' -v k=\"($ifn)\" 'index($1,k){print $2; exit}');" +
+      " else dev=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i==\"dev\"){print $(i+1);exit}}');" +
+      " raw=$(nmcli -t -f IP4.DNS,IP6.DNS device show \"$dev\" 2>/dev/null | sed 's/^[^:]*://'); fi;" +
+      " printf '%s\\n' $raw | awk 'NF && $0 !~ /^(fe80|fc|fd)/ && !seen[$0]++' | paste -sd' ' -"
   }
 
   function updatePublicIp(raw) {
