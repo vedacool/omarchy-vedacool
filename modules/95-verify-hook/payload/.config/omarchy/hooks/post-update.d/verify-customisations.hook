@@ -650,6 +650,18 @@ else
   warn "~/.local/bin/av-jack-notify is missing (restore it from the omarchy-vedacool repo, module 45-av-jack-notify)"
 fi
 
+echo "Living wallpaper cycle"
+if [[ -x $HOME/.local/bin/veda-wallpaper-cycle && -f $HOME/.config/systemd/user/veda-wallpaper-cycle.service ]]; then
+  if systemctl --user is-enabled veda-wallpaper-cycle.service >/dev/null 2>&1; then
+    ok "wallpaper cycle service enabled"
+  else
+    act systemctl --user enable --now veda-wallpaper-cycle.service >/dev/null 2>&1 && fix "wallpaper cycle re-enabled" \
+      || warn "veda-wallpaper-cycle present but not enabled: run 'systemctl --user enable --now veda-wallpaper-cycle.service'"
+  fi
+else
+  echo "  info   veda-wallpaper-cycle not installed (optional; module 86-wallpaper-cycle)"
+fi
+
 # --------------------------------------------- cloned plugins vs upstream drift
 echo "Cloned shell plugins (report only, merging needs a human)"
 mkdir -p "$STATE_DIR" 2>/dev/null

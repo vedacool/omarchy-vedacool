@@ -1,0 +1,39 @@
+#!/bin/bash
+# veda-wallpaper-cycle — slow, GPU-free "living" wallpaper for the VEDA desktop.
+#
+# This laptop's Radeon HD 6730M can't safely run a live/animated wallpaper (it
+# would reintroduce the GPU crashes we fixed, and heat an already-throttling
+# CPU). Instead we pre-render a handful of frames that share one fixed starfield
+# but differ in where the nebula mist sits and which particles are lit bright,
+# then swap between them at randomised intervals. The only cost is one image
+# swap every few seconds, so the mist appears to drift and particles twinkle
+# without any continuous GPU work.
+#
+# Toggle with: systemctl --user enable --now|disable --now veda-wallpaper-cycle
+
+set -u
+FRAMES_DIR="$HOME/.local/share/veda-wallpaper/frames"
+LINK="$HOME/.local/state/omarchy/current/background"
+
+mapfile -t frames < <(ls "$FRAMES_DIR"/frame-*.jpg 2>/dev/null)
+if ((${#frames[@]} == 0)); then
+  echo "veda-wallpaper-cycle: no frames in $FRAMES_DIR" >&2
+  exit 0
+fi
+
+last=-1
+while true; do
+  # Pick a random frame, avoiding an immediate repeat, so both the mist position
+  # and the lit particles change unpredictably each swap.
+  n=$((RANDOM % ${#frames[@]}))
+  if ((${#frames[@]} > 1 && n == last)); then n=$(((n + 1) % ${#frames[@]})); fi
+  last=$n
+  f="${frames[$n]}"
+  # Update the symlink AND tell the running shell to redraw (the plugin only
+  # repaints on this IPC call -- it does not poll the symlink).
+  ln -nsf "$f" "$LINK" 2>/dev/null
+  omarchy-shell background set "$f"; rc=$?
+  echo "veda-wallpaper-cycle: set $(basename "$f") rc=$rc"
+  # Randomised dwell so the mist moves briskly and twinkles land at random times.
+  sleep $((RANDOM % 7 + 6))
+done
