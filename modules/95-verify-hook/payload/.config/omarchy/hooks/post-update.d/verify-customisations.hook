@@ -536,14 +536,23 @@ whatsapp_pin="chrome-web.whatsapp.com__-Default"
 if [[ -f $pins ]]; then
   # Claude unpinned 2026-10-03 at the user's request: Claude runs as the Omarchy
   # agent window (own dock icon via org.omarchy.agent.desktop); do not re-add.
-  for app in google-chrome zoom "$whatsapp_pin"; do ensure_line "$pins" "$app" "dock pin: $app"; done
+  for app in google-chrome zoom "$whatsapp_pin" org.remmina.Remmina; do ensure_line "$pins" "$app" "dock pin: $app"; done
   if grep -qx "WhatsApp" "$pins"; then
     backup "$pins"
     act sed -i '/^WhatsApp$/d' "$pins"
     fix "removed old 'WhatsApp' dock pin (duplicate icon; pinned as $whatsapp_pin instead)"
   fi
 else
-  warn "dock pin file $pins is gone (cache cleared?). Pins: google-chrome, zoom, $whatsapp_pin"
+  warn "dock pin file $pins is gone (cache cleared?). Pins: google-chrome, zoom, $whatsapp_pin, org.remmina.Remmina"
+fi
+
+# Remmina's tray applet (remmina -i) is a menu-only Ayatana AppIndicator whose
+# icon can't open the window on click; we launch Remmina from the dock pin
+# instead, so keep its autostart entry removed if a remmina update recreates it.
+remmina_applet="$HOME/.config/autostart/remmina-applet.desktop"
+if [[ -f $remmina_applet ]]; then
+  act rm -f "$remmina_applet"
+  fix "removed Remmina tray applet autostart (use the dock pin)"
 fi
 
 # Dock icons for windows whose class has no desktop entry (2026-10-03):
