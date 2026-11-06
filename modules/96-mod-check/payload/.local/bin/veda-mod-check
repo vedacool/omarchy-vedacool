@@ -1,0 +1,28 @@
+#!/bin/bash
+# veda-mod-check — one terminal command to verify all your VEDA / vedacool
+# Omarchy mods, auto-repair anything that has drifted or isn't enabled, and tell
+# you plainly about anything it could not fix. Thin wrapper around the
+# omarchy-vedacool repo's setup.sh.
+#
+#   veda-mod-check            check, then auto-repair any drift   (default)
+#   veda-mod-check -n         check only — change nothing (dry report)
+#   veda-mod-check <mod...>   limit to specific module ids (e.g. 90-plymouth-boot)
+#   VEDACOOL_REPO=/path veda-mod-check    use a repo in a non-default location
+set -u
+REPO="${VEDACOOL_REPO:-$HOME/omarchy-vedacool}"
+if [[ ! -x $REPO/setup.sh ]]; then
+  echo "veda-mod-check: omarchy-vedacool repo not found at $REPO" >&2
+  echo "  clone it first:  git clone https://github.com/vedacool/omarchy-vedacool \"$REPO\"" >&2
+  echo "  or point VEDACOOL_REPO at your clone." >&2
+  exit 1
+fi
+
+mode=--fix
+case "${1:-}" in
+  -n|--check|--status|--dry-run|--dry) mode=--status; shift ;;
+  -h|--help)
+    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+esac
+
+exec "$REPO/setup.sh" "$mode" "$@"

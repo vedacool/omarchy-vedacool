@@ -110,12 +110,16 @@ doctor_one() {
   )
 }
 
+# doctor() fills this global with the ids that need repair, so doctor_fix() (and
+# callers) can act on it after the report prints.
+DOCTOR_REPAIR=()
+
 doctor() {
   echo -e "${_B}== VEDA mods — drift report ==${_O}"
   echo -e "${_DIM}comparing installed \$HOME copy against the committed repo payload; read-only${_O}\n"
   local -a sel=("$@"); ((${#sel[@]})) || sel=("${ALL[@]}")
   local n_ok=0 n_drift=0 n_missing=0 n_attn=0 n_info=0
-  local -a need_repair=()
+  DOCTOR_REPAIR=()
   for id in "${sel[@]}"; do
     [[ -d $MODDIR/$id ]] || { echo "  unknown module: $id"; continue; }
     local out; out=$(doctor_one "$id")
@@ -123,18 +127,43 @@ doctor() {
     printf '%s\n' "${out%$'\n'__STATUS__:*}"
     case $st in
       ok) ((n_ok++)) ;;
-      drift)   ((n_drift++));   need_repair+=("$id") ;;
-      missing) ((n_missing++)); need_repair+=("$id") ;;
-      attn)    ((n_attn++));    need_repair+=("$id") ;;
+      drift)   ((n_drift++));   DOCTOR_REPAIR+=("$id") ;;
+      missing) ((n_missing++)); DOCTOR_REPAIR+=("$id") ;;
+      attn)    ((n_attn++));    DOCTOR_REPAIR+=("$id") ;;
       info) ((n_info++)) ;;
     esac
   done
   echo
   echo -e "${_B}Summary:${_O} ${#sel[@]} modules — ${n_ok} in sync, ${n_drift} drift, ${n_missing} missing, ${n_attn} attn, ${n_info} info"
-  if ((${#need_repair[@]})); then
-    echo -e "Repair:  ${_B}./setup.sh ${need_repair[*]}${_O}   ${_DIM}(re-applies the committed version)${_O}"
+  if ((${#DOCTOR_REPAIR[@]})); then
+    echo -e "Repair:  ${_B}./setup.sh ${DOCTOR_REPAIR[*]}${_O}   ${_DIM}(re-applies the committed version)${_O}"
     return 1
   fi
   echo -e "${_S_OK} Everything matches the repo."
+  return 0
+}
+
+# doctor_fix [MODULE ...] — check, then auto-repair whatever drifted/missing by
+# re-applying it, then re-check and clearly report anything still broken.
+doctor_fix() {
+  doctor "$@"
+  local -a todo=("${DOCTOR_REPAIR[@]}")
+  if ! ((${#todo[@]})); then
+    echo -e "\n${_S_OK} ${_B}Nothing to repair — all mods are applied.${_O}"
+    return 0
+  fi
+  echo -e "\n${_B}== Repairing ${#todo[@]} module(s): ${todo[*]} ==${_O}"
+  echo -e "${_DIM}(re-applying the committed version; some may ask for your sudo password)${_O}"
+  ASSUME_YES=1 restore "${todo[@]}"
+  # verify what the repair achieved
+  echo -e "\n${_B}== Re-checking the repaired module(s) ==${_O}"
+  doctor "${todo[@]}" >/dev/null
+  if ((${#DOCTOR_REPAIR[@]})); then
+    echo -e "${_S_MI} ${_B}Still not applied:${_O} ${DOCTOR_REPAIR[*]}"
+    echo -e "   ${_DIM}these could not be fixed automatically — scroll up for the WARN lines explaining why${_O}"
+    echo -e "   ${_DIM}(common causes: needs a package install, sudo was declined, or a service has no user session yet)${_O}"
+    return 1
+  fi
+  echo -e "${_S_OK} ${_B}All repaired — every mod is now applied.${_O}"
   return 0
 }

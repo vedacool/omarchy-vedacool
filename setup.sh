@@ -5,6 +5,7 @@
 #   ./setup.sh --list                 list modules and what they do
 #   ./setup.sh --check [MODULE ...]   preflight only: deps + compatibility, no changes
 #   ./setup.sh --status [MODULE ...]  drift report: is each mod still applied? (read-only)
+#   ./setup.sh --fix [MODULE ...]     drift report, then auto-repair whatever drifted
 #   ./setup.sh                        interactive menu (pick with numbers)
 #   ./setup.sh --all                  restore everything (preflight runs first)
 #   ./setup.sh MODULE [MODULE ...]    restore specific modules by id
@@ -166,8 +167,9 @@ case "${1:-}" in
   --list|-l)  list ;;
   --check|-c) shift; if (($#)); then preflight "$@"; else preflight "${ALL[@]}"; fi ;;
   --status|--doctor|-s) shift; doctor "$@" ;;
+  --fix|--repair)       shift; doctor_fix "$@" ;;
   --all|-a)   restore "${ALL[@]}" ;;
   "")         menu ;;
-  -h|--help)  sed -n '2,17p' "$0" ;;
+  -h|--help)  sed -n '2,18p' "$0" ;;
   *)          restore "$@" ;;
 esac
