@@ -4,6 +4,7 @@
 # Usage:
 #   ./setup.sh --list                 list modules and what they do
 #   ./setup.sh --check [MODULE ...]   preflight only: deps + compatibility, no changes
+#   ./setup.sh --status [MODULE ...]  drift report: is each mod still applied? (read-only)
 #   ./setup.sh                        interactive menu (pick with numbers)
 #   ./setup.sh --all                  restore everything (preflight runs first)
 #   ./setup.sh MODULE [MODULE ...]    restore specific modules by id
@@ -18,6 +19,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/preflight.sh"
+source "$ROOT/lib/doctor.sh"
 MODDIR="$ROOT/modules"
 WARN_COUNT=0
 FORCE=0
@@ -163,8 +165,9 @@ set -- "${args[@]:-}"
 case "${1:-}" in
   --list|-l)  list ;;
   --check|-c) shift; if (($#)); then preflight "$@"; else preflight "${ALL[@]}"; fi ;;
+  --status|--doctor|-s) shift; doctor "$@" ;;
   --all|-a)   restore "${ALL[@]}" ;;
   "")         menu ;;
-  -h|--help)  sed -n '2,16p' "$0" ;;
+  -h|--help)  sed -n '2,17p' "$0" ;;
   *)          restore "$@" ;;
 esac
