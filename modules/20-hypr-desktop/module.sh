@@ -45,8 +45,11 @@ o.window({ tag = "chromium-based-browser" }, { float = true })'
   ensure_block "$HYPR/autostart.lua" 'window-minimise-watch' "minimised-window restore watcher" \
 'o.launch_on_start("'"$HOME"'/.local/bin/window-minimise-watch")'
 
+  # Omarchy reclaimed SUPER+M for itself in a later update (seen 2026-11-20);
+  # unbind its default first so our maximise wins (omarchy defaults load first).
   ensure_block "$HYPR/bindings.lua" 'window-maximise-toggle' "SUPER+M maximise / SUPER+N minimise" \
-'o.bind("SUPER + M", "Maximise", "'"$HOME"'/.local/bin/window-maximise-toggle")
+'hl.unbind("SUPER + M")
+o.bind("SUPER + M", "Maximise", "'"$HOME"'/.local/bin/window-maximise-toggle")
 o.bind("SUPER + N", "Minimise", hl.dsp.window.move({ workspace = "special:minimized", follow = false }))'
 
   # Display scale 1/1 — only rewrite Omarchy'\''s default 2/"auto".

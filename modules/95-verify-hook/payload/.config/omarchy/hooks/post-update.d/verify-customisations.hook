@@ -151,6 +151,9 @@ ensure_block "$HYPR/bindings.lua" 'window-maximise-toggle' "SUPER+M floating max
 -- the window in special:minimized; click it in the dock (or ALT+TAB) to bring
 -- it back, handled by window-minimise-watch (autostart.lua).
 -- SUPER+F stays true fullscreen.
+-- Omarchy reclaimed SUPER+M for itself in a later update; unbind its default
+-- first so our maximise wins (omarchy defaults load before this file).
+hl.unbind("SUPER + M")
 o.bind("SUPER + M", "Maximise", "/home/vedacool/.local/bin/window-maximise-toggle")
 o.bind("SUPER + N", "Minimise", hl.dsp.window.move({ workspace = "special:minimized", follow = false }))'
 if uncommented "$HYPR/bindings.lua" 2>/dev/null | grep -q 'fullscreen({ mode = "maximized" })' \
@@ -172,7 +175,12 @@ fi
 # update takes one, both bindings would fire on one press.
 for key in M N; do
   if grep -rqE "\"SUPER \\+ $key\"" /usr/share/omarchy/default/hypr/ 2>/dev/null; then
-    warn "Omarchy now has its own SUPER+$key binding, clashing with ours: add hl.unbind(\"SUPER + $key\") before it in bindings.lua or pick another key"
+    # Clash exists only if we don't already unbind Omarchy's default first.
+    if uncommented "$HYPR/bindings.lua" | grep -qE "hl\.unbind\(\"SUPER \\+ $key\"\)"; then
+      ok "SUPER+$key clash with Omarchy resolved (we unbind its default first)"
+    else
+      warn "Omarchy now has its own SUPER+$key binding, clashing with ours: add hl.unbind(\"SUPER + $key\") before it in bindings.lua or pick another key"
+    fi
   fi
 done
 
